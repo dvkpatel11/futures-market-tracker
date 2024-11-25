@@ -141,9 +141,77 @@ export class WebSocketService {
 
 // Market Data Service
 export class MarketDataService {
-  private static cache: Map<string, { data: KlineData[]; timestamp: number; price: number; marketCap: number }> =
-    new Map();
+  private static cache: Map<
+    string,
+    {
+      data: KlineData[];
+      timestamp: number;
+      price: number;
+      marketCap: number;
+    }
+  > = new Map();
+
   private static readonly CACHE_TTL = 30000; // 30 seconds
+
+  static async fetchKlinesWithMetadata(
+    symbol: string,
+    interval: string,
+    limit: number = 100
+  ): Promise<{
+    klines: KlineData[];
+    price: number;
+    marketCap: number;
+  }> {
+    const cacheKey = `${symbol}-${interval}-${limit}`;
+    const cached = this.cache.get(cacheKey);
+    const now = Date.now();
+
+    // Check cache first
+    if (cached && now - cached.timestamp < this.CACHE_TTL) {
+      return {
+        klines: cached.data,
+        price: cached.price,
+        marketCap: cached.marketCap,
+      };
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      // Format klines, ensuring all required fields are present
+      const formattedKlines: KlineData[] = data.klines.map((kline: any) => ({
+        timestamp: kline.timestamp,
+        open: parseFloat(kline.open),
+        high: parseFloat(kline.high),
+        low: parseFloat(kline.low),
+        close: parseFloat(kline.close),
+        volume: parseFloat(kline.volume),
+      }));
+
+      // Cache the result
+      this.cache.set(cacheKey, {
+        data: formattedKlines,
+        timestamp: now,
+        price: data.price,
+        marketCap: data.marketCap,
+      });
+
+      return {
+        klines: formattedKlines,
+        price: data.price,
+        marketCap: data.marketCap,
+      };
+    } catch (error) {
+      console.error(`Failed to fetch klines with metadata for ${symbol}:`, error);
+      throw error;
+    }
+  }
 
   static async fetchKlines(symbol: string, interval: string, limit: number = 100): Promise<KlineData[]> {
     const cacheKey = `${symbol}-${interval}-${limit}`;
@@ -183,62 +251,114 @@ export class MarketDataService {
       const config = TIMEFRAMES[timeframe];
       if (!config) throw new Error(`Invalid timeframe: ${timeframe}`);
 
-      const klines = await this.fetchKlines(symbol, config.interval);
-      const metrics = this.calculateMetrics(klines, config);
+      const { klines, price, marketCap } = await this.fetchKlinesWithMetadata(
+        symbol,
+        config.interval,
+        100 //TODO config.limit
+      );
+
+      // Ensure klines are ordered from oldest to newest
+      const orderedKlines = klines.sort((a, b) => a.timestamp - b.timestamp);
+
+      const percentageChange = this.calculateIntervalPercentageChange(orderedKlines);
+      const additionalMetrics = this.calculateAdditionalMetrics(orderedKlines, config);
 
       const currentState = marketState$.getValue();
-      const symbolState = currentState[symbol] || {
+
+      // Ensure all metrics are fully defined
+      const completeMetrics: MarketMetrics = {
+        lastUpdate: Date.now(),
+        priceChange: percentageChange,
+        volatility: additionalMetrics.volatility ?? 0,
+        drawdown: additionalMetrics.drawdown ?? 0,
+        isBullish: additionalMetrics.isBullish ?? false,
+      };
+
+      const symbolState: MarketState = currentState[symbol] || {
         symbol,
         price: 0,
+        marketCap: 0,
         volume: 0,
         metrics: {},
       };
 
-      marketState$.next({
+      // Explicitly create a new state object that matches MarketState
+      const updatedState: Record<string, MarketState> = {
         ...currentState,
         [symbol]: {
           ...symbolState,
+          price,
+          marketCap,
           metrics: {
             ...symbolState.metrics,
-            [timeframe]: metrics,
+            [timeframe]: completeMetrics,
           },
         },
-      });
+      };
+
+      marketState$.next(updatedState);
     } catch (error) {
       console.error(`Failed to update metrics for ${symbol}:`, error);
     }
   }
 
-  private static calculateMetrics(klines: KlineData[], config: (typeof TIMEFRAMES)["5m"]): MarketMetrics {
-    const priceChange = this.calculatePriceChange(klines);
+  private static calculateIntervalPercentageChange(klines: KlineData[]): number {
+    if (klines.length < 2) return 0;
+
+    const startPrice = klines[0].close; // First close price in interval
+    const endPrice = klines[klines.length - 1].close; // Last close price in interval
+
+    // Simple percentage change calculation
+    const percentageChange = ((endPrice - startPrice) / startPrice) * 100;
+
+    // Round to 2 decimal places
+    return Math.round(percentageChange * 100) / 100;
+  }
+
+  private static calculateAdditionalMetrics(
+    klines: KlineData[],
+    config: (typeof TIMEFRAMES)["5m"]
+  ): Partial<MarketMetrics> {
+    // Calculate volatility
     const volatility = this.calculateVolatility(klines, config);
+
+    // Calculate maximum drawdown
     const drawdown = this.calculateDrawdown(klines);
 
+    // Determine market condition
+    const isBullish = this.checkBullishConditions(
+      this.calculateIntervalPercentageChange(klines),
+      drawdown,
+      volatility,
+      config
+    );
+
     return {
-      priceChange,
       volatility,
       drawdown,
-      isBullish: this.checkBullishConditions(priceChange, drawdown, volatility, config),
-      lastUpdate: Date.now(),
+      isBullish,
     };
   }
 
-  private static calculatePriceChange(klines: KlineData[]): number {
-    const startPrice = klines[0].close;
-    const endPrice = klines[klines.length - 1].close;
-    return ((endPrice - startPrice) / startPrice) * 100;
-  }
-
   private static calculateVolatility(klines: KlineData[], config: (typeof TIMEFRAMES)["5m"]): number {
+    if (klines.length < 2) return 0;
+
+    // Calculate log returns
     const returns = klines.slice(1).map((kline, i) => Math.log(kline.close / klines[i].close));
 
+    // Calculate standard deviation of returns
     const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
     const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
 
-    return Math.sqrt(variance) * Math.sqrt(365) * 100 * config.volatilityMultiplier;
+    // Annualize volatility
+    const annualizedVol = Math.sqrt(variance) * Math.sqrt(365) * 100;
+
+    return Math.round(annualizedVol * config.volatilityMultiplier * 100) / 100;
   }
 
   private static calculateDrawdown(klines: KlineData[]): number {
+    if (klines.length < 2) return 0;
+
     let peak = klines[0].high;
     let maxDrawdown = 0;
 
@@ -248,7 +368,7 @@ export class MarketDataService {
       maxDrawdown = Math.max(maxDrawdown, drawdown);
     });
 
-    return maxDrawdown;
+    return Math.round(maxDrawdown * 100) / 100;
   }
 
   private static checkBullishConditions(
@@ -257,11 +377,7 @@ export class MarketDataService {
     volatility: number,
     config: (typeof TIMEFRAMES)["5m"]
   ): boolean {
-    return (
-      priceChange > config.threshold &&
-      drawdown < config.drawdown &&
-      volatility * config.volatilityMultiplier > config.threshold
-    );
+    return priceChange > config.threshold && drawdown < config.drawdown && volatility > config.threshold;
   }
 }
 

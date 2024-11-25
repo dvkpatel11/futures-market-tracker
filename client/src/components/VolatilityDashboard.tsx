@@ -132,7 +132,9 @@ const VolatilityDashboard = () => {
                       align="center"
                       className={metrics?.isBullish ? "positive" : "negative"}
                     >
-                      <MarketPopover metrics={metrics}>{priceChange.toFixed(2)}%</MarketPopover>
+                      <MarketPopover metrics={metrics}>
+                        {marketStates[symbol]?.metrics?.[timeframe]?.priceChange.toFixed(2)}%
+                      </MarketPopover>
                     </StyledTableCell>
                   );
                 })}

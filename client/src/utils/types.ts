@@ -42,6 +42,7 @@ export interface TimeframeSignal {
 export interface MarketState {
   symbol: string;
   price: number;
+  marketCap: number;
   volume: number;
   metrics: Record<string, MarketMetrics>;
   momentum?: MarketSignal;

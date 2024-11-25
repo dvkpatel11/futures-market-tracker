@@ -129,15 +129,12 @@ class WebSocketHandler {
     this.binanceWs.on("message", (data) => {
       try {
         const parsed = JSON.parse(data.toString());
-        console.log("Raw Data: ", parsed); // Add this line to check the raw data
-        if (parsed.data) {
+        if (parsed.data && parsed.data.e === "aggTrade") {
           const transformed = transformers.marketData(JSON.stringify(parsed.data));
-          console.log("Transformed Data: ", transformed); // Check the transformed data
           this.clientWs.send(JSON.stringify(transformed));
         }
       } catch (error) {
         console.error("Error processing Binance message:", error);
-        this.sendError("Data processing error", error);
       }
     });
 
