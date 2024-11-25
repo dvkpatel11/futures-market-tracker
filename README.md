@@ -1,70 +1,128 @@
-# Getting Started with Create React App
+# Crypto Volatility Tracker
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+## Overview
 
-## Available Scripts
+The Crypto Volatility Tracker is a real-time analysis tool designed to identify potentially profitable trading opportunities in cryptocurrency futures markets by monitoring volatility patterns across multiple timeframes. The dashboard helps traders spot periods of increasing volatility coupled with directional price movement, which often precede significant market moves.
 
-In the project directory, you can run:
+## How It Works
 
-### `npm start`
+### Multi-Timeframe Analysis
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+The system simultaneously monitors 5 key timeframes:
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+- 5 minutes (short-term price action)
+- 1 hour (intraday trends)
+- 2 hours (medium-term momentum)
+- 4 hours (trend confirmation)
+- 1 day (overall market direction)
 
-### `npm test`
+### Key Metrics
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+1. **Price Change %**
 
-### `npm run build`
+   - Measures the percentage change in price over each timeframe
+   - Helps identify the strength and direction of trends
+   - Calibrated thresholds (2% for 5m up to 20% for 1d) based on typical market movements
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+2. **Volatility**
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+   - Calculated using a modified version of historical volatility
+   - Includes volatility multipliers for each timeframe (1.2x for 5m up to 3.0x for 1d)
+   - Higher multipliers on longer timeframes help filter out noise
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+3. **Drawdown**
+   - Tracks the maximum price decline from peak
+   - Used as a risk metric
+   - Different thresholds per timeframe (5% for 5m up to 25% for 1d)
 
-### `npm run eject`
+### Bullish Conditions
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+A timeframe is considered bullish when:
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+- Price change exceeds the threshold for that timeframe
+- Drawdown remains below the maximum allowed
+- Volatility is sufficiently high (indicating potential for movement)
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## Trading Strategy Considerations
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+### Signal Confluence
 
-## Learn More
+The most reliable signals typically occur when:
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+- Multiple timeframes show bullish conditions simultaneously
+- Lower timeframes (5m, 1h) confirm the direction of higher timeframes
+- Volatility is increasing but drawdown remains controlled
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+### Risk Management
 
-### Code Splitting
+- Monitor drawdown levels closely
+- Higher drawdown on longer timeframes may indicate increasing market risk
+- Use the 5m and 1h timeframes for entry timing
+- Consider the 4h and 1d timeframes for overall trend direction
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+## Best Practices
 
-### Analyzing the Bundle Size
+1. **Signal Validation**
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+   - Wait for confirmation across multiple timeframes
+   - Pay attention to increasing volatility patterns
+   - Check that drawdown remains within acceptable ranges
 
-### Making a Progressive Web App
+2. **Position Sizing**
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+   - Consider volatility levels when determining position size
+   - Higher volatility should generally mean smaller position sizes
+   - Monitor drawdown metrics for stop-loss placement
 
-### Advanced Configuration
+3. **Market Context**
+   - Use the 1d timeframe to understand the broader market context
+   - Look for alignment between short and long timeframes
+   - Be more cautious when shorter and longer timeframes conflict
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+## Important Disclaimers
 
-### Deployment
+⚠️ **Risk Warning**:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+- Cryptocurrency trading involves substantial risk of loss
+- Past performance does not indicate future results
+- The indicators and metrics provided are tools, not guaranteed signals
+- Always conduct your own research and risk assessment
+- Never trade with money you cannot afford to lose
 
-### `npm run build` fails to minify
+## Technical Implementation Notes
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+The application uses:
+
+- Real-time WebSocket connections to track price movements
+- Rate-limited API calls to fetch historical data
+- Efficient data processing to calculate metrics in real-time
+- Automatic reconnection handling for connection stability
+- Message queuing to handle high-frequency updates
+
+### Performance Considerations
+
+- Historical calculations update every candle close
+- Real-time price and volume updates via WebSocket
+- Automatic connection recovery on network issues
+- Built-in rate limiting to comply with exchange restrictions
+
+## Future Enhancements
+
+Potential areas for improvement:
+
+1. Additional technical indicators
+2. Custom alert settings
+3. Historical backtesting module
+4. Risk management calculator
+5. Position sizing recommendations
+6. Additional exchange support
+
+## Contributing
+
+We welcome contributions! Areas where help is particularly appreciated:
+
+- Additional exchange integrations
+- Enhanced technical indicators
+- Improved volatility calculations
+- Backtesting capabilities
+- UI/UX improvements

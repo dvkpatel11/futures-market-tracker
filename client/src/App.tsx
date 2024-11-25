@@ -1,10 +1,10 @@
 import React from "react";
-import CryptoTracker from "./components/CryptoTracker";
+import VolatilityDashboard from "./components/VolatilityDashboard";
 
 function App() {
   return (
     <div className="App">
-      <CryptoTracker />
+      <VolatilityDashboard />
     </div>
   );
 }
