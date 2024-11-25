@@ -1,10 +1,10 @@
-// server.ts
 import cors from "cors";
 import express from "express";
-import http from "http";
+import { createServer } from "http";
 import fetch from "node-fetch";
 import { WebSocket, WebSocketServer } from "ws";
-import { RateLimiter } from "./rateLimiter";
+import { RateLimiter } from "./rateLimiter.js";
+import type { KlineData } from "./types.js";
 
 // ================== Constants ==================
 const PORT = process.env.PORT || 5000;
@@ -25,7 +25,6 @@ interface MarketData {
   price: number;
   volume: number;
   timestamp: number;
-  // ... other fields as needed
 }
 
 // ================== Data Transformers ==================
@@ -42,7 +41,7 @@ const transformers = {
     };
   },
 
-  klines: (rawKlines: any[]): any[] => {
+  klines: (rawKlines: any[]): KlineData[] => {
     return rawKlines.map((k) => ({
       timestamp: Number(k[0]),
       open: parseFloat(k[1]),
@@ -60,17 +59,11 @@ const validators = {
     if (typeof symbol !== "string") {
       throw new Error("Symbol must be a string");
     }
-    return symbol.toUpperCase(); // Futures symbols are uppercase
+    return symbol.toUpperCase();
   },
 
   interval: (interval: string): string => {
-    const validIntervals = new Set([
-      "5m",
-      "1h",
-      "2h",
-      "4h",
-      "1d", // Matches our frontend timeframes
-    ]);
+    const validIntervals = new Set(["5m", "1h", "2h", "4h", "1d"]);
 
     if (!validIntervals.has(interval)) {
       throw new Error("Invalid interval");
@@ -84,9 +77,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const server = http.createServer(app);
+const server = createServer(app);
 const wss = new WebSocketServer({ server });
-const rateLimiter = new RateLimiter(1200, 60000); // 1200 requests per minute
+const rateLimiter = new RateLimiter(1200, 60000);
 
 // ================== WebSocket Handler ==================
 class WebSocketHandler {
@@ -118,14 +111,29 @@ class WebSocketHandler {
   private setupBinanceHandlers() {
     if (!this.binanceWs) return;
 
+    // this.binanceWs.on("message", (data) => {
+    //   try {
+    //     if (this.clientWs.readyState === WebSocket.OPEN) {
+    //       const parsed = JSON.parse(data.toString());
+    //       if (parsed.data) {
+    //         const transformed = transformers.marketData(JSON.stringify(parsed.data));
+    //         this.clientWs.send(JSON.stringify(transformed));
+    //       }
+    //     }
+    //   } catch (error) {
+    //     console.error("Error processing Binance message:", error);
+    //     this.sendError("Data processing error", error);
+    //   }
+    // });
+
     this.binanceWs.on("message", (data) => {
       try {
-        if (this.clientWs.readyState === WebSocket.OPEN) {
-          const parsed = JSON.parse(data.toString());
-          if (parsed.data) {
-            const transformed = transformers.marketData(JSON.stringify(parsed.data));
-            this.clientWs.send(JSON.stringify(transformed));
-          }
+        const parsed = JSON.parse(data.toString());
+        console.log("Raw Data: ", parsed); // Add this line to check the raw data
+        if (parsed.data) {
+          const transformed = transformers.marketData(JSON.stringify(parsed.data));
+          console.log("Transformed Data: ", transformed); // Check the transformed data
+          this.clientWs.send(JSON.stringify(transformed));
         }
       } catch (error) {
         console.error("Error processing Binance message:", error);
@@ -157,7 +165,7 @@ class WebSocketHandler {
     this.clientWs.send(
       JSON.stringify({
         error: type,
-        details: error.message,
+        details: error instanceof Error ? error.message : String(error),
       })
     );
   }
@@ -193,12 +201,12 @@ wss.on("connection", (ws) => {
       if (data.type === "subscribe") {
         handler.handleSubscribe(data.streams);
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error("Error processing WebSocket message:", error);
       ws.send(
         JSON.stringify({
           error: "Message processing error",
-          details: error.message,
+          details: error instanceof Error ? error.message : String(error),
         })
       );
     }
@@ -227,29 +235,50 @@ app.get("/api/klines", async (req: any, res: any) => {
     const interval = validators.interval(req.query.interval as string);
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 1000);
 
-    const url = `${BINANCE_FUTURES_API}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const klinesUrl = `${BINANCE_FUTURES_API}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const tickerUrl = `${BINANCE_FUTURES_API}/ticker/24hr?symbol=${symbol}`;
 
-    console.log("Fetching from Binance:", url);
-    const response = await fetch(url);
-    const data = (await response.json()) as any[];
+    console.log("Fetching from Binance:", klinesUrl);
 
-    if (!response.ok) {
-      console.error("Binance API error:", data);
-      return res.status(response.status).json(data);
+    // Fetch both klines and ticker data
+    const [klinesResponse, tickerResponse] = await Promise.all([fetch(klinesUrl), fetch(tickerUrl)]);
+
+    const klinesData = (await klinesResponse.json()) as any[];
+    const tickerData = (await tickerResponse.json()) as any;
+
+    if (!klinesResponse.ok) {
+      console.error("Binance API error (klines):", klinesData);
+      return res.status(klinesResponse.status).json(klinesData);
     }
 
-    const transformedData = transformers.klines(data);
-    res.json(transformedData);
-  } catch (error: any) {
+    if (!tickerResponse.ok) {
+      console.error("Binance API error (ticker):", tickerData);
+      return res.status(tickerResponse.status).json(tickerData);
+    }
+
+    // Extract price and market cap from ticker data
+    const price = parseFloat(tickerData.lastPrice);
+    const marketCap = parseFloat(tickerData.quoteVolume); // Assuming quoteVolume represents the market cap in Binance
+
+    // Transform klines data
+    const transformedKlines = transformers.klines(klinesData);
+
+    // Send both klines and market data
+    return res.json({
+      klines: transformedKlines,
+      price,
+      marketCap,
+    });
+  } catch (error) {
     console.error("Proxy server error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       error: "Failed to fetch data from Binance",
-      details: error.message,
+      details: error instanceof Error ? error.message : String(error),
     });
   }
 });
 
-app.get("/health", (_req, res) => {
+app.get("/health", (_req: express.Request, res: express.Response) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
