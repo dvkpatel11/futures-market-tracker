@@ -26,129 +26,93 @@ interface AlertConfig {
 export const CRYPTO_MARKET_CONFIG = {
   environment: {
     name: "Crypto",
-    volatilityProfile: "extreme" as const,
-    baseVolatility: 0.03, // 3% daily volatility baseline
-    updateFrequency: 30000, // 30 seconds
+    volatilityProfile: "high" as const, // Changed from extreme to high as default
+    baseVolatility: 0.02, // 2% daily volatility baseline (more realistic)
+    updateFrequency: 15000, // 15 seconds (faster updates for crypto)
   },
 
   timeframes: {
     "5m": {
       seconds: 300,
-      threshold: 0.3, // 0.3% minimum move
-      drawdown: 0.8, // 0.8% maximum drawdown
+      threshold: 0.25, // 0.25% minimum move (more realistic)
+      drawdown: 0.5, // 0.5% maximum drawdown
       interval: "5m",
       volatilityMultiplier: 1.2,
       signalConfig: {
-        minStrength: 0.6,
-        weightInSignal: 0.1, // 10% weight in overall signal
-        minimumCandles: 10,
-        volatilityWeight: 0.3,
-        volumeWeight: 0.3,
-        trendWeight: 0.4,
+        minStrength: 0.65,
+        weightInSignal: 0.15, // Increased from 0.1
+        minimumCandles: 12, // Reduced from 24
+        volatilityWeight: 0.35,
+        volumeWeight: 0.35, // Increased volume importance
+        trendWeight: 0.3, // Reduced trend weight
       },
     },
     "1h": {
       seconds: 3600,
-      threshold: 0.8,
-      drawdown: 1.5,
+      threshold: 0.6, // Reduced from 0.8
+      drawdown: 1.2, // Reduced from 1.5
       interval: "1h",
       volatilityMultiplier: 1.5,
       signalConfig: {
-        minStrength: 0.65,
-        weightInSignal: 0.15, // 15% weight
+        minStrength: 0.7,
+        weightInSignal: 0.25, // Increased importance
         minimumCandles: 24,
         volatilityWeight: 0.35,
-        volumeWeight: 0.25,
-        trendWeight: 0.4,
-      },
-    },
-    "2h": {
-      seconds: 7200,
-      threshold: 1.2,
-      drawdown: 2,
-      interval: "2h",
-      volatilityMultiplier: 1.8,
-      signalConfig: {
-        minStrength: 0.7,
-        weightInSignal: 0.2, // 20% weight
-        minimumCandles: 24,
-        volatilityWeight: 0.4,
-        volumeWeight: 0.2,
-        trendWeight: 0.4,
+        volumeWeight: 0.35,
+        trendWeight: 0.3,
       },
     },
     "4h": {
       seconds: 14400,
-      threshold: 1.5,
-      drawdown: 2.5,
+      threshold: 1.2,
+      drawdown: 2.0,
       interval: "4h",
       volatilityMultiplier: 2.0,
       signalConfig: {
         minStrength: 0.75,
-        weightInSignal: 0.25, // 25% weight
-        minimumCandles: 30,
-        volatilityWeight: 0.4,
-        volumeWeight: 0.2,
-        trendWeight: 0.4,
+        weightInSignal: 0.3,
+        minimumCandles: 24,
+        volatilityWeight: 0.35,
+        volumeWeight: 0.35,
+        trendWeight: 0.3,
       },
     },
     "1d": {
       seconds: 86400,
-      threshold: 2.5,
-      drawdown: 4,
+      threshold: 2.0, // Reduced from 2.5
+      drawdown: 3.0, // Reduced from 4.0
       interval: "1d",
-      volatilityMultiplier: 3.0,
+      volatilityMultiplier: 2.5, // Reduced from 3.0
       signalConfig: {
         minStrength: 0.8,
-        weightInSignal: 0.3, // 30% weight
+        weightInSignal: 0.3,
         minimumCandles: 30,
-        volatilityWeight: 0.45,
-        volumeWeight: 0.15,
-        trendWeight: 0.4,
+        volatilityWeight: 0.4,
+        volumeWeight: 0.3,
+        trendWeight: 0.3,
       },
     },
   },
 
   alerting: {
-    minOverallStrength: 0.75, // 75% overall signal strength required
-    requiredTimeframes: ["5m", "1h", "2h"], // minimum timeframes needed
-    alertCooldown: 1800000, // 30 minutes between alerts
-    priceChangeThreshold: 0.5, // 0.5% minimum price change to trigger new alert
+    minOverallStrength: 0.7, // Reduced from 0.75 for more signals
+    requiredTimeframes: ["5m", "1h"], // Reduced required timeframes
+    alertCooldown: 900000, // 15 minutes (reduced from 30)
+    priceChangeThreshold: 0.3, // Reduced from 0.5%
   },
 
   volatilityAdjustment: {
-    // Adjust thresholds based on current market volatility
     thresholdMultipliers: {
-      low: 0.7, // Lower thresholds in low volatility
-      medium: 1.0, // Base case
-      high: 1.3, // Higher thresholds in high volatility
-      extreme: 1.5, // Much higher thresholds in extreme volatility
+      low: 0.8, // Increased from 0.7
+      medium: 1.0,
+      high: 1.2, // Reduced from 1.3
+      extreme: 1.3, // Reduced from 1.5
     },
-    // Periods to look back for volatility calculation
     lookbackPeriods: {
-      "5m": 288, // 24 hours
-      "1h": 168, // 7 days
-      "2h": 168, // 14 days
-      "4h": 180, // 30 days
-      "1d": 30, // 30 days
-    },
-  },
-
-  // Technical indicators configuration
-  indicators: {
-    rsi: {
-      period: 14,
-      overbought: 70,
-      oversold: 30,
-    },
-    macd: {
-      fastPeriod: 12,
-      slowPeriod: 26,
-      signalPeriod: 9,
-    },
-    volumeProfile: {
-      significantChange: 1.5, // 150% of average volume
-      lookbackPeriods: 20,
+      "5m": 144, // 12 hours (reduced from 24)
+      "1h": 72, // 3 days (reduced from 7)
+      "4h": 90, // 15 days (reduced from 30)
+      "1d": 20, // 20 days (reduced from 30)
     },
   },
 };

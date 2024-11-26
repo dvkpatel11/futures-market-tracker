@@ -10,14 +10,6 @@ export interface KlineData {
   marketCap: number;
 }
 
-export interface TimeframeConfig {
-  seconds: number;
-  threshold: number;
-  drawdown: number;
-  interval: string;
-  volatilityMultiplier: number;
-}
-
 export interface MarketSignal {
   symbol: string;
   timestamp: number;
@@ -49,9 +41,27 @@ export interface MarketState {
 }
 
 export interface MarketMetrics {
+  lastUpdate: number;
   priceChange: number;
   volatility: number;
   drawdown: number;
   isBullish: boolean;
-  lastUpdate: number;
+  volumeProfile: {
+    value: number;
+    trend: "increasing" | "decreasing" | "stable";
+  };
+  momentum: {
+    shortTerm: number;
+    mediumTerm: number;
+    longTerm: number;
+  };
+}
+
+export interface TimeframeConfig {
+  interval: string;
+  seconds: number;
+  threshold: number;
+  volatilityMultiplier: number;
+  volatilityThreshold: number;
+  maxDrawdown: number;
 }

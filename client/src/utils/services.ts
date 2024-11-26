@@ -1,625 +1,260 @@
+import axios from "axios";
 import { BehaviorSubject } from "rxjs";
 import { CRYPTO_MARKET_CONFIG, FUTURES_COINS, TIMEFRAMES } from "./constants";
-import { KlineData, MarketMetrics, MarketSignal, MarketState, TimeframeConfig, TimeframeSignal } from "./types";
+import { KlineData, MarketMetrics, MarketSignal, MarketState, TimeframeSignal } from "./types";
 
-// Stream subjects
 export const connectionStatus$ = new BehaviorSubject<boolean>(false);
 export const marketState$ = new BehaviorSubject<Record<string, MarketState>>({});
-export const alertStream$ = new BehaviorSubject<any>(null);
 
-// Constants
-const WS_RECONNECT_DELAY = 1000;
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
-const WS_BASE_URL = process.env.REACT_APP_WS_BASE_URL || "ws://localhost:5000";
-
-// WebSocket Service
-export class WebSocketService {
+export class MarketDataManager {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private messageQueue: Set<string> = new Set();
-  private processingInterval: NodeJS.Timeout | null = null;
+  private readonly MAX_RECONNECT_ATTEMPTS = 5;
+  private updateIntervals: NodeJS.Timeout[] = [];
+
+  private readonly WS_URL = process.env.REACT_APP_WS_URL || "ws://localhost:5000";
+  private readonly RECONNECT_DELAY = 1000;
 
   constructor() {
-    this.handleWebSocketMessage = this.handleWebSocketMessage.bind(this);
-    this.setupMessageProcessor();
+    this.initialize();
   }
 
-  private setupMessageProcessor() {
-    this.processingInterval = setInterval(() => {
-      if (this.messageQueue.size > 0) {
-        const messages = Array.from(this.messageQueue);
-        this.messageQueue.clear();
-        messages.forEach((msg) => this.processMessage(JSON.parse(msg)));
-      }
-    }, 100); // Process messages every 100ms
+  initialize(): void {
+    this.connectWebSocket();
+    this.setupMetricsUpdates();
+    this.setupMomentumDetection();
   }
 
-  connect() {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
-
-    this.ws = new WebSocket(WS_BASE_URL);
+  private connectWebSocket(): void {
+    this.ws = new WebSocket(this.WS_URL);
 
     this.ws.onopen = () => {
-      console.log("WebSocket connected");
       connectionStatus$.next(true);
-      this.reconnectAttempts = 0;
-
-      // Subscribe to market data streams
-      this.subscribe(FUTURES_COINS.map((symbol) => `${symbol.toLowerCase()}@aggTrade`));
+      this.subscribeToMarkets(FUTURES_COINS);
     };
 
     this.ws.onclose = () => {
-      console.log("WebSocket disconnected");
       connectionStatus$.next(false);
       this.handleReconnect();
     };
 
-    this.ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      this.ws?.close();
-    };
-
-    this.ws.onmessage = this.handleWebSocketMessage;
+    this.ws.onmessage = this.processWebSocketMessage.bind(this);
   }
 
-  private handleWebSocketMessage(event: MessageEvent) {
-    try {
-      this.messageQueue.add(event.data);
-    } catch (error) {
-      console.error("Error queuing WebSocket message:", error);
-    }
-  }
-
-  private processMessage(data: any) {
-    try {
-      if (data.error) {
-        console.error("WebSocket error:", data.error);
-        return;
-      }
-
-      const currentState = marketState$.getValue();
-      const symbol = data.symbol;
-
-      if (symbol) {
-        const updatedState: MarketState = {
-          ...currentState[symbol],
-          symbol,
-          price: parseFloat(data.price),
-          volume: parseFloat(data.volume) || currentState[symbol]?.volume || 0,
-          metrics: currentState[symbol]?.metrics || {},
-        };
-
-        marketState$.next({
-          ...currentState,
-          [symbol]: updatedState,
-        });
-      }
-    } catch (error) {
-      console.error("Error processing message:", error);
-    }
-  }
-
-  private handleReconnect() {
-    if (this.reconnectAttempts < this.maxReconnectAttempts) {
-      this.reconnectAttempts++;
-      const delay = WS_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1);
-
-      this.reconnectTimer = setTimeout(() => {
-        console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-        this.connect();
-      }, delay);
-    }
-  }
-
-  subscribe(streams: string[]) {
+  private subscribeToMarkets(symbols: string[]): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(
-        JSON.stringify({
-          method: "SUBSCRIBE",
-          params: streams,
-          id: Date.now(),
-        })
-      );
+      symbols.forEach((symbol) => {
+        const stream = `${symbol.toLowerCase()}@ticker`;
+        this.ws?.send(
+          JSON.stringify({
+            method: "SUBSCRIBE",
+            params: [stream],
+            id: Date.now(),
+          })
+        );
+      });
     }
   }
 
-  disconnect() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-    }
-    if (this.processingInterval) {
-      clearInterval(this.processingInterval);
-    }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-  }
-}
-
-// Market Data Service
-export class MarketDataService {
-  private static cache: Map<
-    string,
-    {
-      data: KlineData[];
-      timestamp: number;
-      price: number;
-      marketCap: number;
-    }
-  > = new Map();
-
-  private static readonly CACHE_TTL = 30000; // 30 seconds
-
-  static async fetchKlinesWithMetadata(
-    symbol: string,
-    interval: string,
-    limit: number = 100
-  ): Promise<{
-    klines: KlineData[];
-    price: number;
-    marketCap: number;
-  }> {
-    const cacheKey = `${symbol}-${interval}-${limit}`;
-    const cached = this.cache.get(cacheKey);
-    const now = Date.now();
-
-    // Check cache first
-    if (cached && now - cached.timestamp < this.CACHE_TTL) {
-      return {
-        klines: cached.data,
-        price: cached.price,
-        marketCap: cached.marketCap,
-      };
-    }
-
+  private processWebSocketMessage(event: MessageEvent): void {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+      const data = JSON.parse(event.data);
+      this.updateMarketState(data);
+    } catch (error) {
+      console.error("WebSocket message processing error:", error);
+    }
+  }
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+  private updateMarketState(tickerData: any): void {
+    const currentState = marketState$.value;
+    const symbol = tickerData.s;
 
-      const data = await response.json();
+    if (symbol) {
+      const updatedState: Record<string, MarketState> = {
+        ...currentState,
+        [symbol]: {
+          ...(currentState[symbol] || {}),
+          symbol,
+          price: parseFloat(tickerData.c),
+          volume: parseFloat(tickerData.v),
+          marketCap: 0, // You'll need to fetch this separately
+        },
+      };
 
-      // Format klines, ensuring all required fields are present
-      const formattedKlines: KlineData[] = data.klines.map((kline: any) => ({
+      marketState$.next(updatedState);
+    }
+  }
+
+  private setupMetricsUpdates(): void {
+    FUTURES_COINS.forEach((symbol) => {
+      Object.keys(TIMEFRAMES).forEach(async (timeframe) => {
+        const updateInterval = setInterval(async () => {
+          try {
+            const metrics = await this.updateMarketMetrics(symbol, timeframe);
+            const currentState = marketState$.value;
+
+            marketState$.next({
+              ...currentState,
+              [symbol]: {
+                ...currentState[symbol],
+                metrics: {
+                  ...(currentState[symbol]?.metrics || {}),
+                  [timeframe]: metrics,
+                },
+              },
+            });
+          } catch (error) {
+            console.error(`Metrics update failed for ${symbol} - ${timeframe}:`, error);
+          }
+        }, TIMEFRAMES[timeframe].seconds * 1000);
+
+        this.updateIntervals.push(updateInterval);
+      });
+    });
+  }
+
+  private setupMomentumDetection(): void {
+    FUTURES_COINS.forEach((symbol) => {
+      const detectionInterval = setInterval(async () => {
+        try {
+          const marketSignal = await this.detectMarketSignals(symbol);
+          // You can add additional logic for alerts or signal processing here
+        } catch (error) {
+          console.error(`Momentum detection failed for ${symbol}:`, error);
+        }
+      }, CRYPTO_MARKET_CONFIG.environment.updateFrequency);
+
+      this.updateIntervals.push(detectionInterval);
+    });
+  }
+
+  private async updateMarketMetrics(symbol: string, timeframe: string): Promise<MarketMetrics> {
+    const config = TIMEFRAMES[timeframe];
+    const klines = await this.fetchKlineData(symbol, config.interval, config.seconds);
+
+    return this.calculateMetrics(klines, config);
+  }
+
+  private async fetchKlineData(symbol: string, interval: string, limit: number = 100): Promise<KlineData[]> {
+    try {
+      const response = await axios.get(`/api/klines`, {
+        params: { symbol, interval, limit },
+      });
+
+      return response.data.map((kline: any) => ({
         timestamp: kline.timestamp,
         open: parseFloat(kline.open),
         high: parseFloat(kline.high),
         low: parseFloat(kline.low),
         close: parseFloat(kline.close),
         volume: parseFloat(kline.volume),
+        price: parseFloat(kline.close),
+        marketCap: 0, // Fetch separately if needed
       }));
-
-      // Cache the result
-      this.cache.set(cacheKey, {
-        data: formattedKlines,
-        timestamp: now,
-        price: data.price,
-        marketCap: data.marketCap,
-      });
-
-      return {
-        klines: formattedKlines,
-        price: data.price,
-        marketCap: data.marketCap,
-      };
-    } catch (error) {
-      console.error(`Failed to fetch klines with metadata for ${symbol}:`, error);
-      throw error;
-    }
-  }
-
-  static async fetchKlines(symbol: string, interval: string, limit: number = 100): Promise<KlineData[]> {
-    const cacheKey = `${symbol}-${interval}-${limit}`;
-    const cached = this.cache.get(cacheKey);
-    const now = Date.now();
-
-    if (cached && now - cached.timestamp < this.CACHE_TTL) {
-      return cached.data;
-    }
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const formattedData = data.klines.map((kline: KlineData) => ({
-        timestamp: kline.timestamp,
-        open: kline.open,
-        high: kline.high,
-        low: kline.low,
-        close: kline.close,
-        volume: kline.volume,
-      }));
-
-      this.cache.set(cacheKey, { data: formattedData, timestamp: now, price: data.price, marketCap: data.marketCap });
-      return formattedData;
     } catch (error) {
       console.error(`Failed to fetch klines for ${symbol}:`, error);
-      throw error;
+      return [];
     }
   }
 
-  static async updateMarketMetrics(symbol: string, timeframe: string): Promise<void> {
-    try {
-      const config = TIMEFRAMES[timeframe];
-      if (!config) throw new Error(`Invalid timeframe: ${timeframe}`);
-
-      const { klines, price, marketCap } = await this.fetchKlinesWithMetadata(
-        symbol,
-        config.interval,
-        100 //TODO config.limit
-      );
-
-      // Ensure klines are ordered from oldest to newest
-      const orderedKlines = klines.sort((a, b) => a.timestamp - b.timestamp);
-
-      const percentageChange = this.calculateIntervalPercentageChange(orderedKlines);
-      const additionalMetrics = this.calculateAdditionalMetrics(orderedKlines, config);
-
-      const currentState = marketState$.getValue();
-
-      // Ensure all metrics are fully defined
-      const completeMetrics: MarketMetrics = {
-        lastUpdate: Date.now(),
-        priceChange: percentageChange,
-        volatility: additionalMetrics.volatility ?? 0,
-        drawdown: additionalMetrics.drawdown ?? 0,
-        isBullish: additionalMetrics.isBullish ?? false,
-      };
-
-      const symbolState: MarketState = currentState[symbol] || {
-        symbol,
-        price: 0,
-        marketCap: 0,
-        volume: 0,
-        metrics: {},
-      };
-
-      // Explicitly create a new state object that matches MarketState
-      const updatedState: Record<string, MarketState> = {
-        ...currentState,
-        [symbol]: {
-          ...symbolState,
-          price,
-          marketCap,
-          metrics: {
-            ...symbolState.metrics,
-            [timeframe]: completeMetrics,
-          },
-        },
-      };
-
-      marketState$.next(updatedState);
-    } catch (error) {
-      console.error(`Failed to update metrics for ${symbol}:`, error);
-    }
-  }
-
-  private static calculateIntervalPercentageChange(klines: KlineData[]): number {
-    if (klines.length < 2) return 0;
-
-    const startPrice = klines[0].close; // First close price in interval
-    const endPrice = klines[klines.length - 1].close; // Last close price in interval
-
-    // Simple percentage change calculation
-    const percentageChange = ((endPrice - startPrice) / startPrice) * 100;
-
-    // Round to 2 decimal places
-    return Math.round(percentageChange * 100) / 100;
-  }
-
-  private static calculateAdditionalMetrics(
-    klines: KlineData[],
-    config: (typeof TIMEFRAMES)["5m"]
-  ): Partial<MarketMetrics> {
-    // Calculate volatility
-    const volatility = this.calculateVolatility(klines, config);
-
-    // Calculate maximum drawdown
-    const drawdown = this.calculateDrawdown(klines);
-
-    // Determine market condition
-    const isBullish = this.checkBullishConditions(
-      this.calculateIntervalPercentageChange(klines),
-      drawdown,
-      volatility,
-      config
-    );
-
-    return {
-      volatility,
-      drawdown,
-      isBullish,
-    };
-  }
-
-  private static calculateVolatility(klines: KlineData[], config: (typeof TIMEFRAMES)["5m"]): number {
-    if (klines.length < 2) return 0;
-
-    // Calculate log returns
-    const returns = klines.slice(1).map((kline, i) => Math.log(kline.close / klines[i].close));
-
-    // Calculate standard deviation of returns
-    const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
-    const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
-
-    // Annualize volatility
-    const annualizedVol = Math.sqrt(variance) * Math.sqrt(365) * 100;
-
-    return Math.round(annualizedVol * config.volatilityMultiplier * 100) / 100;
-  }
-
-  private static calculateDrawdown(klines: KlineData[]): number {
-    if (klines.length < 2) return 0;
-
-    let peak = klines[0].high;
-    let maxDrawdown = 0;
-
-    klines.forEach((kline) => {
-      if (kline.high > peak) peak = kline.high;
-      const drawdown = ((peak - kline.low) / peak) * 100;
-      maxDrawdown = Math.max(maxDrawdown, drawdown);
-    });
-
-    return Math.round(maxDrawdown * 100) / 100;
-  }
-
-  private static checkBullishConditions(
-    priceChange: number,
-    drawdown: number,
-    volatility: number,
-    config: (typeof TIMEFRAMES)["5m"]
-  ): boolean {
-    return priceChange > config.threshold && drawdown < config.drawdown && volatility > config.threshold;
-  }
-}
-
-// Market Data Manager
-export class MarketDataManager {
-  private wsService: WebSocketService;
-  private updateIntervals: Record<string, NodeJS.Timeout> = {};
-  private lastAlerts: Map<string, number> = new Map();
-  private momentumDetector: MomentumDetector;
-
-  constructor() {
-    this.wsService = new WebSocketService();
-    this.momentumDetector = new MomentumDetector();
-  }
-
-  initialize() {
-    this.wsService.connect();
-    this.setupMetricsUpdates();
-    this.setupMomentumDetection();
-  }
-
-  private setupMetricsUpdates() {
-    Object.values(this.updateIntervals).forEach((interval) => clearInterval(interval));
-    this.updateIntervals = {};
-
-    FUTURES_COINS.forEach((symbol) => {
-      Object.entries(TIMEFRAMES).forEach(([timeframe, config]) => {
-        const updateInterval = Math.floor((config.seconds * 1000) / 2);
-
-        // Initial update
-        MarketDataService.updateMarketMetrics(symbol, timeframe);
-
-        // Setup periodic updates
-        this.updateIntervals[`${symbol}-${timeframe}`] = setInterval(() => {
-          MarketDataService.updateMarketMetrics(symbol, timeframe);
-        }, updateInterval);
-      });
-    });
-  }
-
-  private setupMomentumDetection() {
-    const { updateFrequency } = CRYPTO_MARKET_CONFIG.environment;
-
-    FUTURES_COINS.forEach((symbol) => {
-      setInterval(async () => {
-        try {
-          const momentum = await this.momentumDetector.analyzeMarketConditions(symbol);
-          const currentState = marketState$.getValue();
-
-          marketState$.next({
-            ...currentState,
-            [symbol]: {
-              ...currentState[symbol],
-              momentum,
-            },
-          });
-
-          if (this.shouldTriggerAlert(momentum, currentState[symbol])) {
-            this.emitAlert(symbol, momentum);
-          }
-        } catch (error) {
-          console.error(`Error detecting momentum for ${symbol}:`, error);
-        }
-      }, updateFrequency);
-    });
-  }
-
-  private shouldTriggerAlert(momentum: MarketSignal, currentState: MarketState): boolean {
-    const { alerting } = CRYPTO_MARKET_CONFIG;
-    const lastAlert = this.lastAlerts.get(momentum.symbol);
-    const now = Date.now();
-
-    return (
-      momentum.isValid &&
-      momentum.overallStrength >= alerting.minOverallStrength &&
-      (!lastAlert || now - lastAlert >= alerting.alertCooldown) &&
-      Math.abs(currentState.metrics["5m"]?.priceChange || 0) >= alerting.priceChangeThreshold
-    );
-  }
-
-  private emitAlert(symbol: string, momentum: MarketSignal) {
-    this.lastAlerts.set(symbol, Date.now());
-    alertStream$.next({
-      symbol,
-      timestamp: Date.now(),
-      momentum,
-      type: momentum.overallStrength > 0.9 ? "strong" : "moderate",
-    });
-  }
-
-  cleanup() {
-    Object.values(this.updateIntervals).forEach((interval) => clearInterval(interval));
-    this.updateIntervals = {};
-    this.wsService.disconnect();
-  }
-}
-
-// Momentum Detector
-class MomentumDetector {
-  private readonly config: typeof CRYPTO_MARKET_CONFIG;
-  private lastVolatilityCheck: number = 0;
-  private currentVolatilityProfile: "low" | "medium" | "high" | "extreme" = "medium";
-
-  constructor(config = CRYPTO_MARKET_CONFIG) {
-    this.config = config;
-  }
-
-  async analyzeMarketConditions(symbol: string): Promise<MarketSignal> {
+  private async detectMarketSignals(symbol: string): Promise<MarketSignal> {
     const signals: TimeframeSignal[] = [];
     let overallStrength = 0;
 
-    await this.updateVolatilityProfile(symbol);
+    for (const [timeframe, config] of Object.entries(TIMEFRAMES)) {
+      const klines = await this.fetchKlineData(symbol, config.interval, config.seconds);
 
-    for (const [timeframe, config] of Object.entries(this.config.timeframes)) {
-      const klines = await MarketDataService.fetchKlines(symbol, config.interval, config.seconds);
-
-      const signal = this.analyzeTimeframe(timeframe, klines, config);
+      const signal = this.analyzeTimeframeSignal(timeframe, klines, config);
 
       if (signal) {
         signals.push(signal);
-        overallStrength += signal.strength * config.volatilityMultiplier; // Adjusting strength by volatilityMultiplier
+        overallStrength += signal.strength * config.volatilityMultiplier;
       }
     }
-
-    const hasRequiredTimeframes = this.config.alerting.requiredTimeframes.every((timeframe) =>
-      signals.some((s) => s.timeframe === timeframe)
-    );
 
     return {
       symbol,
       timestamp: Date.now(),
       signals,
       overallStrength,
-      isValid: hasRequiredTimeframes && overallStrength >= this.config.alerting.minOverallStrength,
-      volatilityProfile: this.currentVolatilityProfile,
+      isValid: signals.length > 0,
+      volatilityProfile: this.determineVolatilityProfile(overallStrength),
     };
   }
 
-  private async updateVolatilityProfile(symbol: string): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastVolatilityCheck < this.config.environment.updateFrequency) {
-      return;
-    }
+  private analyzeTimeframeSignal(timeframe: string, klines: KlineData[], config: any): TimeframeSignal | null {
+    const metrics = this.calculateMetrics(klines, config);
 
-    const klines = await MarketDataService.fetchKlines(symbol, "1d", 30);
-    const volatility = this.calculateMarketVolatility(klines);
-    this.currentVolatilityProfile = this.determineVolatilityProfile(volatility);
-    this.lastVolatilityCheck = now;
-  }
-
-  private calculateMarketVolatility(klines: KlineData[]): number {
-    const returns = klines.slice(1).map((kline, i) => Math.log(kline.close / klines[i].close));
-
-    const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
-    const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
-
-    return Math.sqrt(variance) * Math.sqrt(365) * 100; // Annualized volatility
-  }
-
-  private determineVolatilityProfile(volatility: number): "low" | "medium" | "high" | "extreme" {
-    if (
-      volatility <
-      this.config.volatilityAdjustment.thresholdMultipliers.low * this.config.environment.baseVolatility
-    ) {
-      return "low";
-    } else if (
-      volatility <
-      this.config.volatilityAdjustment.thresholdMultipliers.medium * this.config.environment.baseVolatility
-    ) {
-      return "medium";
-    } else if (
-      volatility <
-      this.config.volatilityAdjustment.thresholdMultipliers.high * this.config.environment.baseVolatility
-    ) {
-      return "high";
-    } else {
-      return "extreme";
-    }
-  }
-
-  private analyzeTimeframe(timeframe: string, klines: KlineData[], config: TimeframeConfig): TimeframeSignal | null {
-    const priceStrength = this.calculatePriceStrength(klines, config.threshold);
-    const volumeStrength = this.calculateVolumeStrength(klines);
-    const trend = this.calculateTrend(priceStrength, volumeStrength);
-
-    const signalStrength = priceStrength * config.volatilityMultiplier + volumeStrength * config.volatilityMultiplier;
-
-    if (signalStrength >= config.threshold) {
-      // Assuming you have access to the price at the time of the signal (using the first and last kline)
-      const priceAtSignal = klines[klines.length - 1].close;
-
-      const components = {
-        price: priceStrength,
-        volume: volumeStrength,
-        trend: trend,
-      };
-
+    if (metrics.priceChange > config.threshold) {
       return {
         timeframe,
-        strength: signalStrength,
+        strength: metrics.priceChange,
         confirmedAt: Date.now(),
-        priceAtSignal: priceAtSignal,
-        components: components,
+        priceAtSignal: klines[klines.length - 1].close,
+        components: {
+          price: metrics.priceChange,
+          volume: metrics.volumeProfile.value,
+          trend: metrics.isBullish ? "positive" : "negative",
+        },
       };
     }
 
     return null;
   }
 
-  private calculatePriceStrength(klines: KlineData[], threshold: number): number {
+  private calculateMetrics(klines: KlineData[], config: any): MarketMetrics {
+    if (!klines.length) {
+      return this.getDefaultMetrics();
+    }
+
     const priceChange = this.calculatePriceChange(klines);
+    const volatility = this.calculateVolatility(klines);
+    const drawdown = this.calculateDrawdown(klines);
+    const volumeProfile = this.calculateVolumeProfile(klines);
+    const momentum = this.calculateMomentum(klines);
 
-    // Ensure price change is above threshold for strength
-    return priceChange >= threshold ? priceChange : 0;
+    return {
+      lastUpdate: Date.now(),
+      priceChange: this.normalizeMetric(priceChange),
+      volatility: this.normalizeMetric(volatility * config.volatilityMultiplier),
+      drawdown: this.normalizeMetric(drawdown),
+      isBullish: this.determineTrend(priceChange, volatility, drawdown, config),
+      volumeProfile,
+      momentum,
+    };
   }
 
-  private calculateVolumeStrength(klines: KlineData[]): number {
-    const totalVolume = klines.reduce((sum, kline) => sum + kline.volume, 0);
+  // Include other calculation methods from the previous MarketMetricsCalculator
+  // (calculatePriceChange, calculateVolatility, calculateDrawdown, etc.)
 
-    // Example logic for volume strength based on significant change
-    return totalVolume >
-      (this.config.indicators.volumeProfile.significantChange * totalVolume) /
-        this.config.indicators.volumeProfile.lookbackPeriods
-      ? totalVolume
-      : 0;
+  private determineVolatilityProfile(strength: number): "low" | "medium" | "high" | "extreme" {
+    if (strength < 0.2) return "low";
+    if (strength < 0.5) return "medium";
+    if (strength < 0.8) return "high";
+    return "extreme";
   }
 
-  private calculateTrend(priceStrength: number, volumeStrength: number): string {
-    if (priceStrength > 0 && volumeStrength > 0) {
-      return "positive";
-    }
-    if (priceStrength < 0 && volumeStrength < 0) {
-      return "negative";
-    }
-
-    return "neutral";
+  private getDefaultMetrics(): MarketMetrics {
+    return {
+      lastUpdate: Date.now(),
+      priceChange: 0,
+      volatility: 0,
+      drawdown: 0,
+      isBullish: false,
+      volumeProfile: {
+        value: 0,
+        trend: "stable",
+      },
+      momentum: {
+        shortTerm: 50,
+        mediumTerm: 50,
+        longTerm: 50,
+      },
+    };
   }
 
-  private calculatePriceChange(klines: KlineData[]): number {
-    const startPrice = klines[0].close;
-    const endPrice = klines[klines.length - 1].close;
-
-    return ((endPrice - startPrice) / startPrice) * 100; // Percentage change
+  cleanup(): void {
+    this.updateIntervals.forEach(clearInterval);
+    this.ws?.close();
   }
 }

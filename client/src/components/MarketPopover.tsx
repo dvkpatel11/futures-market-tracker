@@ -19,41 +19,13 @@ const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, children }) => {
     setAnchorEl(null);
   };
 
-  // Memoize the signal strength calculation
+  // Simplified signal strength calculation
   const signalStrength = useMemo(() => {
-    if (!metrics) return "neutral";
     const strength = Math.abs(metrics.priceChange);
-    if (strength > 15) return "strong";
-    if (strength > 7) return "moderate";
-    return "weak";
-  }, [metrics?.priceChange]);
-
-  // Memoize the market conditions
-  const marketConditions = useMemo(() => {
-    if (!metrics) return null;
-
-    const conditions = [];
-    if (metrics.volatility > 50) conditions.push("High Volatility");
-    if (metrics.drawdown > 10) conditions.push("Significant Drawdown");
-    if (Math.abs(metrics.priceChange) > 10) conditions.push("Strong Movement");
-
-    return conditions;
-  }, [metrics]);
-
-  const getSignalColor = (strength: string) => {
-    switch (strength) {
-      case "strong":
-        return "error.main";
-      case "moderate":
-        return "warning.main";
-      case "weak":
-        return "info.main";
-      default:
-        return "text.secondary";
-    }
-  };
-
-  if (!metrics) return <span>{children}</span>;
+    if (strength > 15) return "Strong";
+    if (strength > 7) return "Moderate";
+    return "Weak";
+  }, [metrics.priceChange]);
 
   return (
     <>
@@ -89,48 +61,45 @@ const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, children }) => {
           <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
             <Activity size={18} />
             <Typography variant="body2" sx={{ ml: 1 }}>
-              Volatility: {metrics.volatility?.toFixed(2)}%
+              Volatility: {metrics.volatility.toFixed(2)}%
             </Typography>
           </Box>
 
           <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
             <ArrowDownCircle size={18} />
             <Typography variant="body2" sx={{ ml: 1 }}>
-              Max Drawdown: {metrics.drawdown?.toFixed(2)}%
+              Max Drawdown: {metrics.drawdown.toFixed(2)}%
             </Typography>
           </Box>
 
-          <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
-            {metrics.isBullish ? <TrendingUp color="green" size={18} /> : <TrendingDown color="red" size={18} />}
-            <Typography
-              variant="body2"
-              sx={{
-                ml: 1,
-                color: metrics.isBullish ? "success.main" : "error.main",
-                fontWeight: 500,
-              }}
-            >
-              {metrics.isBullish ? "Bullish" : "Bearish"} • {signalStrength} signal
-            </Typography>
-          </Box>
-
-          {marketConditions && marketConditions.length > 0 && (
-            <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
-              {marketConditions.map((condition, index) => (
-                <Typography
-                  key={index}
-                  variant="caption"
-                  sx={{
-                    display: "block",
-                    color: "text.secondary",
-                    "&:not(:last-child)": { mb: 0.5 },
-                  }}
-                >
-                  • {condition}
-                </Typography>
-              ))}
+          <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
+            <Box sx={{ display: "flex", alignItems: "center", mr: 2 }}>
+              {metrics.isBullish ? <TrendingUp color="green" size={18} /> : <TrendingDown color="red" size={18} />}
+              <Typography
+                variant="body2"
+                sx={{
+                  ml: 1,
+                  color: metrics.isBullish ? "success.main" : "error.main",
+                  fontWeight: 500,
+                }}
+              >
+                {metrics.isBullish ? "Bullish" : "Bearish"}
+              </Typography>
             </Box>
-          )}
+            <Typography variant="body2">{signalStrength} Signal</Typography>
+          </Box>
+
+          <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
+            <Typography variant="body2">
+              Volume: {metrics.volumeProfile.value.toFixed(2)} ({metrics.volumeProfile.trend})
+            </Typography>
+          </Box>
+
+          <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
+            <Typography variant="caption">Short Term: {metrics.momentum.shortTerm.toFixed(2)}</Typography>
+            <Typography variant="caption">Medium Term: {metrics.momentum.mediumTerm.toFixed(2)}</Typography>
+            <Typography variant="caption">Long Term: {metrics.momentum.longTerm.toFixed(2)}</Typography>
+          </Box>
 
           <Typography
             variant="caption"
