@@ -1,23 +1,27 @@
 import { BehaviorSubject, interval } from "rxjs";
 import { catchError, switchMap, takeUntil } from "rxjs/operators";
-import { CRYPTO_MARKET_CONFIG, FUTURES_COINS } from "./constants";
-import { KlineData, MarketSignal, MarketState, TimeframeConfig, TimeframeSignal } from "./types";
+import { CONFIG, CRYPTO_MARKET_CONFIG, FUTURES_COINS } from "./constants";
+import {
+  KlineData,
+  MarketDataResponse,
+  MarketMetrics,
+  MarketSignal,
+  MarketState,
+  TickerData,
+  TimeframeConfig,
+  TimeframeSignal,
+} from "./types";
 
 // Stream subjects
 export const connectionStatus$ = new BehaviorSubject<boolean>(false);
 export const marketState$ = new BehaviorSubject<Record<string, MarketState>>({});
 export const alertStream$ = new BehaviorSubject<any>(null);
 
-// Constants
-const WS_RECONNECT_DELAY = 1000;
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
-const WS_BASE_URL = process.env.REACT_APP_WS_BASE_URL || "ws://localhost:5000";
-
 // WebSocket Service
 export class WebSocketService {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
+  private maxReconnectAttempts = CONFIG.WS.MAX_RECONNECT_ATTEMPTS;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private messageQueue: Set<string> = new Set();
   private processingInterval: NodeJS.Timeout | null = null;
@@ -34,13 +38,13 @@ export class WebSocketService {
         this.messageQueue.clear();
         messages.forEach((msg) => this.processMessage(JSON.parse(msg)));
       }
-    }, 100); // Process messages every 100ms
+    }, CONFIG.MARKET_ANALYSIS.MESSAGE_PROCESSOR_INTERVAL);
   }
 
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
-    this.ws = new WebSocket(WS_BASE_URL);
+    this.ws = new WebSocket(CONFIG.WS.BASE_URL);
 
     this.ws.onopen = () => {
       console.log("WebSocket connected");
@@ -105,7 +109,7 @@ export class WebSocketService {
   private handleReconnect() {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      const delay = WS_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1);
+      const delay = CONFIG.WS.RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1);
 
       this.reconnectTimer = setTimeout(() => {
         console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
@@ -183,7 +187,11 @@ export class MarketMetricsCalculator {
 
 // signal-detector.ts
 export class MarketSignalDetector {
-  static detectBullishSignals(klines: KlineData[], config: TimeframeConfig): TimeframeSignal | null {
+  static detectBullishSignals(
+    klines: KlineData[],
+    config: TimeframeConfig,
+    tickerData?: TickerData
+  ): TimeframeSignal | null {
     const closes = klines.map((k) => k.close);
 
     const metrics = {
@@ -193,6 +201,8 @@ export class MarketSignalDetector {
         shortTerm: MarketMetricsCalculator.calculateRSI(closes, 14),
         mediumTerm: MarketMetricsCalculator.calculateRSI(closes, 30),
       },
+      // Include additional data from ticker if available
+      priceChangePercent: tickerData?.priceChangePercent || 0,
     };
 
     const isBullish =
@@ -211,6 +221,7 @@ export class MarketSignalDetector {
             price: metrics.priceChange,
             volume: klines[klines.length - 1].volume,
             trend: "positive",
+            priceChangePercent: metrics.priceChangePercent,
           },
         }
       : null;
@@ -243,15 +254,15 @@ export class MarketSignalDetector {
 export class MarketDataService {
   private destroy$ = new BehaviorSubject<void>(undefined);
   private marketSignals$ = new BehaviorSubject<MarketSignal | null>(null);
+  private dataFetcher: MarketDataFetcher;
 
-  constructor(
-    private symbols: string[],
-    private dataFetcher: (symbol: string, interval: string) => Promise<KlineData[]>
-  ) {}
+  constructor(private symbols: string[], dataFetcher?: MarketDataFetcher) {
+    this.dataFetcher = dataFetcher || new MarketDataFetcher();
+  }
 
   startAnalysis() {
     this.symbols.forEach((symbol) => {
-      interval(CRYPTO_MARKET_CONFIG.environment.updateFrequency)
+      interval(CONFIG.MARKET_ANALYSIS.UPDATE_FREQUENCY)
         .pipe(
           takeUntil(this.destroy$),
           switchMap(() => this.analyzeSymbol(symbol)),
@@ -265,26 +276,226 @@ export class MarketDataService {
   }
 
   private async analyzeSymbol(symbol: string): Promise<void> {
-    const bullishSignals: TimeframeSignal[] = [];
+    const symbolMetrics: Record<string, MarketMetrics> = {};
 
     for (const [timeframe, config] of Object.entries(CRYPTO_MARKET_CONFIG.timeframes)) {
       try {
-        const klines = await this.dataFetcher(symbol, config.interval);
-        const signal = MarketSignalDetector.detectBullishSignals(klines, config);
+        // Fetch market data for the current timeframe
+        const marketData = await this.dataFetcher.fetchMarketData(
+          symbol,
+          config.interval,
+          100 // Adjust limit as needed
+        );
 
-        if (signal) {
-          bullishSignals.push(signal);
-        }
+        const klines = marketData.klines;
+        const closes = klines.map((k) => k.close);
+        const volumes = klines.map((k) => k.volume);
+
+        // Calculate comprehensive market metrics
+        const priceChange = MarketMetricsCalculator.calculatePriceChange(klines);
+        const volatility = MarketMetricsCalculator.calculateVolatility(klines);
+
+        // Calculate drawdown
+        const drawdown = this.calculateDrawdown(klines);
+
+        // Calculate momentum across different time horizons
+        const momentum = {
+          shortTerm: MarketMetricsCalculator.calculateRSI(closes, 14),
+          mediumTerm: MarketMetricsCalculator.calculateRSI(closes, 30),
+          longTerm: MarketMetricsCalculator.calculateRSI(closes, 90),
+        };
+
+        // Volume profile analysis
+        const volumeTrend = this.analyzeVolumeTrend(volumes);
+
+        // Bullish signal detection
+        const isBullish = this.detectBullishConditions({
+          priceChange,
+          volatility,
+          momentum,
+          closes,
+          config,
+        });
+
+        // Construct market metrics for this timeframe
+        const marketMetrics: MarketMetrics = {
+          lastUpdate: Date.now(),
+          priceChange,
+          volatility,
+          drawdown,
+          isBullish,
+          volumeProfile: {
+            value: volumes[volumes.length - 1],
+            trend: volumeTrend,
+          },
+          momentum,
+        };
+
+        // Store metrics for the timeframe
+        symbolMetrics[timeframe] = marketMetrics;
+
+        // Update global market state
+        const currentState = marketState$.getValue();
+        marketState$.next({
+          ...currentState,
+          [symbol]: {
+            ...currentState[symbol],
+            symbol,
+            price: marketData.lastPrice,
+            marketCap: marketData.marketCap,
+            metrics: {
+              ...currentState[symbol]?.metrics,
+              [timeframe]: marketMetrics,
+            },
+          },
+        });
       } catch (error) {
         console.error(`Analysis failed for ${symbol} - ${timeframe}:`, error);
       }
     }
 
-    const marketSignal = MarketSignalDetector.analyzeBullishSignals(bullishSignals);
+    // Comprehensive market signal generation
+    const marketSignal = this.generateOverallMarketSignal(symbol, symbolMetrics);
 
     if (marketSignal && marketSignal.isValid) {
       this.marketSignals$.next(marketSignal);
     }
+  }
+
+  // Helper method to calculate drawdown
+  private calculateDrawdown(klines: KlineData[]): number {
+    let maxPrice = -Infinity;
+    let maxDrawdown = 0;
+
+    for (const kline of klines) {
+      maxPrice = Math.max(maxPrice, kline.high);
+      const drawdown = ((maxPrice - kline.close) / maxPrice) * 100;
+      maxDrawdown = Math.max(maxDrawdown, drawdown);
+    }
+
+    return maxDrawdown;
+  }
+
+  // Analyze volume trend
+  private analyzeVolumeTrend(volumes: number[]): "increasing" | "decreasing" | "stable" {
+    if (volumes.length < 2) return "stable";
+
+    const volumeChanges = volumes.slice(1).map((vol, i) => vol - volumes[i]);
+    const avgChange = volumeChanges.reduce((sum, change) => sum + change, 0) / volumeChanges.length;
+
+    const changeThreshold = volumes[0] * 0.05; // 5% threshold
+
+    if (avgChange > changeThreshold) return "increasing";
+    if (avgChange < -changeThreshold) return "decreasing";
+    return "stable";
+  }
+
+  // Modify method to use CONFIG constants
+  private detectBullishConditions(params: {
+    priceChange: number;
+    volatility: number;
+    momentum: {
+      shortTerm: number;
+      mediumTerm: number;
+      longTerm: number;
+    };
+    closes: number[];
+    config: TimeframeConfig;
+  }): boolean {
+    const { priceChange, volatility, momentum, config } = params;
+
+    const isPricePositive = priceChange > config.threshold;
+    const isLowVolatility = volatility < config.volatilityThreshold;
+
+    const momentumConditions =
+      momentum.shortTerm > CONFIG.MARKET_ANALYSIS.MOMENTUM.SHORT_TERM_RSI_THRESHOLD &&
+      momentum.mediumTerm > CONFIG.MARKET_ANALYSIS.MOMENTUM.MEDIUM_TERM_RSI_THRESHOLD &&
+      momentum.longTerm > CONFIG.MARKET_ANALYSIS.MOMENTUM.LONG_TERM_RSI_THRESHOLD;
+
+    const trendConfirmation = momentumConditions && isPricePositive;
+    const riskManagement = isLowVolatility;
+
+    return trendConfirmation && riskManagement;
+  }
+
+  // Modify volatility profile determination
+  private determineVolatilityProfile(strength: number): MarketSignal["volatilityProfile"] {
+    const { LOW, MEDIUM, HIGH } = CONFIG.VOLATILITY_PROFILES;
+
+    if (strength < LOW) return "low";
+    if (strength < MEDIUM) return "medium";
+    if (strength < HIGH) return "high";
+    return "extreme";
+  }
+
+  private determineTrend(metrics: MarketMetrics): "bullish" | "bearish" | "neutral" {
+    const trendFactors = [
+      // Price momentum across different time horizons
+      metrics.momentum.shortTerm > 70 ? 1 : metrics.momentum.shortTerm < 30 ? -1 : 0,
+      metrics.momentum.mediumTerm > 70 ? 1 : metrics.momentum.mediumTerm < 30 ? -1 : 0,
+      metrics.momentum.longTerm > 70 ? 1 : metrics.momentum.longTerm < 30 ? -1 : 0,
+
+      // Price change direction
+      metrics.priceChange > 0 ? 1 : metrics.priceChange < 0 ? -1 : 0,
+
+      // Volume trend contribution
+      metrics.volumeProfile.trend === "increasing" ? 1 : metrics.volumeProfile.trend === "decreasing" ? -1 : 0,
+
+      // Directional bias from isBullish flag
+      metrics.isBullish ? 1 : -1,
+
+      // Volatility and drawdown considerations
+      metrics.volatility < 0.05 ? 1 : metrics.volatility > 0.2 ? -1 : 0,
+      metrics.drawdown < 5 ? 1 : metrics.drawdown > 20 ? -1 : 0,
+    ];
+
+    // Calculate trend score
+    const trendScore = trendFactors.reduce((sum, factor) => sum + factor, 0);
+
+    // Determine trend based on score
+    if (trendScore >= 3) return "bullish";
+    if (trendScore <= -3) return "bearish";
+    return "neutral";
+  }
+
+  // In generateOverallMarketSignal method
+  private generateOverallMarketSignal(
+    symbol: string,
+    symbolMetrics: Record<string, MarketMetrics>
+  ): MarketSignal | null {
+    const bullishTimeframes = Object.entries(symbolMetrics)
+      .filter(([_, metrics]) => metrics.isBullish)
+      .map(([timeframe, metrics]) => {
+        const trend = this.determineTrend(metrics);
+
+        const signal: TimeframeSignal = {
+          timeframe,
+          strength: metrics.priceChange,
+          confirmedAt: metrics.lastUpdate,
+          priceAtSignal: metrics.priceChange, // Using priceChange as price at signal
+          components: {
+            price: metrics.priceChange, // Again, using priceChange as price
+            volume: metrics.volumeProfile.value,
+            trend,
+            priceChangePercent: metrics.priceChange,
+          },
+        };
+        return signal;
+      });
+
+    if (bullishTimeframes.length < CONFIG.MARKET_ANALYSIS.TREND_DETECTION.DEFAULT_TIMEFRAMES_FOR_CONFIRMATION)
+      return null;
+
+    const overallStrength = bullishTimeframes.reduce((sum, signal) => sum + signal.strength, 0);
+
+    return {
+      symbol,
+      timestamp: Date.now(),
+      signals: bullishTimeframes,
+      overallStrength,
+      isValid: bullishTimeframes.length >= 2,
+      volatilityProfile: this.determineVolatilityProfile(overallStrength),
+    };
   }
 
   getMarketSignals$() {
@@ -294,5 +505,79 @@ export class MarketDataService {
   cleanup() {
     this.destroy$.next();
     this.destroy$.complete();
+  }
+}
+
+export class MarketDataFetcher {
+  private baseUrl: string;
+
+  constructor(baseUrl: string = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000") {
+    this.baseUrl = baseUrl;
+  }
+
+  private async fetchWithErrorHandling(
+    endpoint: string,
+    params: Record<string, string | number>
+  ): Promise<MarketDataResponse> {
+    const url = new URL(`${this.baseUrl}${endpoint}`);
+    Object.entries(params).forEach(([key, value]) => url.searchParams.append(key, value.toString()));
+
+    try {
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorBody}`);
+      }
+
+      return (await response.json()) as MarketDataResponse;
+    } catch (error) {
+      console.error("Fetch error:", error);
+      throw error;
+    }
+  }
+
+  async fetchMarketData(symbol: string, interval: string, limit: number = 100): Promise<MarketDataResponse> {
+    try {
+      const data = await this.fetchWithErrorHandling("/api/klines", {
+        symbol: symbol.toUpperCase(),
+        interval,
+        limit,
+      });
+
+      // Comprehensive validation of returned data
+      if (!data.klines || !Array.isArray(data.klines)) {
+        throw new Error("Invalid klines data received");
+      }
+
+      if (typeof data.lastPrice !== "number" || typeof data.marketCap !== "number") {
+        throw new Error("Invalid market data received");
+      }
+
+      return data;
+    } catch (error) {
+      console.error(`Failed to fetch market data for ${symbol}:`, error);
+      throw error;
+    }
+  }
+  async fetchKlineData(symbol: string, interval: string, limit: number = 100): Promise<KlineData[]> {
+    const marketData = await this.fetchMarketData(symbol, interval, limit);
+    return marketData.klines;
+  }
+
+  async fetchCurrentPrice(symbol: string): Promise<number> {
+    const marketData = await this.fetchMarketData(symbol, "1h", 1);
+    return marketData.lastPrice;
+  }
+
+  async fetchMarketCap(symbol: string): Promise<number> {
+    const marketData = await this.fetchMarketData(symbol, "1h", 1);
+    return marketData.marketCap;
   }
 }

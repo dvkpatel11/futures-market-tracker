@@ -1,4 +1,8 @@
 // types.ts
+export interface MarketDataResponse extends TickerData {
+  klines: KlineData[];
+}
+
 export interface KlineData {
   timestamp: number;
   open: number;
@@ -6,8 +10,15 @@ export interface KlineData {
   low: number;
   close: number;
   volume: number;
-  price: number;
+}
+
+export interface TickerData {
+  symbol: string;
+  lastPrice: number;
   marketCap: number;
+  priceChangePercent: number;
+  high: number;
+  low: number;
 }
 
 export interface MarketSignal {
@@ -28,6 +39,7 @@ export interface TimeframeSignal {
     price: number;
     volume: number;
     trend: string;
+    priceChangePercent: number;
   };
 }
 

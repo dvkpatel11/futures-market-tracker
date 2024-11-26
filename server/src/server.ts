@@ -4,28 +4,13 @@ import { createServer } from "http";
 import fetch from "node-fetch";
 import { WebSocket, WebSocketServer } from "ws";
 import { RateLimiter } from "./rateLimiter.js";
-import type { KlineData } from "./types.js";
+import type { KlineData, MarketData, MarketDataResponse, SubscribeMessage, TickerData } from "./types.js";
 
 // ================== Constants ==================
 const PORT = process.env.PORT || 5000;
 const BINANCE_FUTURES_WS = "wss://fstream.binance.com/stream";
 const BINANCE_FUTURES_API = "https://fapi.binance.com/fapi/v1";
 const HEARTBEAT_INTERVAL = 30000;
-
-// ================== Type Definitions ==================
-interface SubscribeMessage {
-  type: "subscribe";
-  streams: string | string[];
-}
-
-interface MarketData {
-  eventType: string;
-  eventTime: string;
-  symbol: string;
-  price: number;
-  volume: number;
-  timestamp: number;
-}
 
 // ================== Data Transformers ==================
 const transformers = {
@@ -110,22 +95,6 @@ class WebSocketHandler {
 
   private setupBinanceHandlers() {
     if (!this.binanceWs) return;
-
-    // this.binanceWs.on("message", (data) => {
-    //   try {
-    //     if (this.clientWs.readyState === WebSocket.OPEN) {
-    //       const parsed = JSON.parse(data.toString());
-    //       if (parsed.data) {
-    //         const transformed = transformers.marketData(JSON.stringify(parsed.data));
-    //         this.clientWs.send(JSON.stringify(transformed));
-    //       }
-    //     }
-    //   } catch (error) {
-    //     console.error("Error processing Binance message:", error);
-    //     this.sendError("Data processing error", error);
-    //   }
-    // });
-
     this.binanceWs.on("message", (data) => {
       try {
         const parsed = JSON.parse(data.toString());
@@ -221,6 +190,47 @@ wss.on("connection", (ws) => {
   ws.send(JSON.stringify({ type: "connection", status: "connected" }));
 });
 
+// ================== Data Fetching Utilities ==================
+const binanceDataService = {
+  async fetchKlines(symbol: string, interval: string, limit: number): Promise<KlineData[]> {
+    const klinesUrl = `${BINANCE_FUTURES_API}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+
+    const response = await fetch(klinesUrl);
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error("Binance API error (klines):", errorData);
+      throw new Error(`Failed to fetch klines: ${response.statusText}`);
+    }
+
+    const rawKlines = (await response.json()) as any[];
+    return transformers.klines(rawKlines);
+  },
+
+  async fetchTickerData(symbol: string): Promise<TickerData> {
+    const tickerUrl = `${BINANCE_FUTURES_API}/ticker/24hr?symbol=${symbol}`;
+
+    const response = await fetch(tickerUrl);
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error("Binance API error (ticker):", errorData);
+      throw new Error(`Failed to fetch ticker data: ${response.statusText}`);
+    }
+
+    const tickerData = (await response.json()) as any;
+
+    return {
+      symbol: tickerData.symbol,
+      lastPrice: parseFloat(tickerData.lastPrice),
+      marketCap: parseFloat(tickerData.quoteVolume),
+      priceChangePercent: parseFloat(tickerData.priceChangePercent),
+      high: parseFloat(tickerData.highPrice),
+      low: parseFloat(tickerData.lowPrice),
+    };
+  },
+};
+
 // ================== REST API Routes ==================
 app.get("/api/klines", async (req: any, res: any) => {
   try {
@@ -232,45 +242,30 @@ app.get("/api/klines", async (req: any, res: any) => {
     const interval = validators.interval(req.query.interval as string);
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 1000);
 
-    const klinesUrl = `${BINANCE_FUTURES_API}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const tickerUrl = `${BINANCE_FUTURES_API}/ticker/24hr?symbol=${symbol}`;
+    try {
+      // Fetch klines and ticker data separately
+      const [klines, tickerData] = await Promise.all([
+        binanceDataService.fetchKlines(symbol, interval, limit),
+        binanceDataService.fetchTickerData(symbol),
+      ]);
 
-    console.log("Fetching from Binance:", klinesUrl);
-
-    // Fetch both klines and ticker data
-    const [klinesResponse, tickerResponse] = await Promise.all([fetch(klinesUrl), fetch(tickerUrl)]);
-
-    const klinesData = (await klinesResponse.json()) as any[];
-    const tickerData = (await tickerResponse.json()) as any;
-
-    if (!klinesResponse.ok) {
-      console.error("Binance API error (klines):", klinesData);
-      return res.status(klinesResponse.status).json(klinesData);
+      // Send both klines and market data
+      return res.json({
+        klines,
+        ...tickerData,
+      } as MarketDataResponse);
+    } catch (fetchError) {
+      console.error("Data fetching error:", fetchError);
+      return res.status(500).json({
+        error: "Failed to fetch data from Binance",
+        details: fetchError instanceof Error ? fetchError.message : String(fetchError),
+      });
     }
-
-    if (!tickerResponse.ok) {
-      console.error("Binance API error (ticker):", tickerData);
-      return res.status(tickerResponse.status).json(tickerData);
-    }
-
-    // Extract price and market cap from ticker data
-    const price = parseFloat(tickerData.lastPrice);
-    const marketCap = parseFloat(tickerData.quoteVolume); // Assuming quoteVolume represents the market cap in Binance
-
-    // Transform klines data
-    const transformedKlines = transformers.klines(klinesData);
-
-    // Send both klines and market data
-    return res.json({
-      klines: transformedKlines,
-      price,
-      marketCap,
-    });
-  } catch (error) {
-    console.error("Proxy server error:", error);
-    return res.status(500).json({
-      error: "Failed to fetch data from Binance",
-      details: error instanceof Error ? error.message : String(error),
+  } catch (validationError) {
+    console.error("Validation error:", validationError);
+    return res.status(400).json({
+      error: "Invalid request parameters",
+      details: validationError instanceof Error ? validationError.message : String(validationError),
     });
   }
 });

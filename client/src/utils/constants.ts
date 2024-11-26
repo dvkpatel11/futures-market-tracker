@@ -66,4 +66,48 @@ export const CRYPTO_MARKET_CONFIG: MarketConfig = {
   },
 };
 
+// Global Configuration
+export const CONFIG = {
+  // WebSocket Constants
+  WS: {
+    RECONNECT_DELAY: 1000,
+    MAX_RECONNECT_ATTEMPTS: 5,
+    BASE_URL: process.env.REACT_APP_WS_BASE_URL || "ws://localhost:5000",
+  },
+
+  // API Constants
+  API: {
+    BASE_URL: process.env.REACT_APP_API_BASE_URL || "http://localhost:5000",
+  },
+
+  // Market Analysis Constants
+  MARKET_ANALYSIS: {
+    MESSAGE_PROCESSOR_INTERVAL: 100, // ms
+    DEFAULT_KLINE_LIMIT: 100,
+    UPDATE_FREQUENCY: 30000, // 30 seconds
+
+    // Momentum and Trend Detection Thresholds
+    MOMENTUM: {
+      SHORT_TERM_RSI_THRESHOLD: 60,
+      MEDIUM_TERM_RSI_THRESHOLD: 55,
+      LONG_TERM_RSI_THRESHOLD: 50,
+    },
+
+    VOLUME: {
+      CHANGE_THRESHOLD_PERCENTAGE: 0.05, // 5% change
+    },
+
+    TREND_DETECTION: {
+      DEFAULT_TIMEFRAMES_FOR_CONFIRMATION: 2,
+    },
+  },
+
+  // Volatility Profile Thresholds
+  VOLATILITY_PROFILES: {
+    LOW: 0.2,
+    MEDIUM: 0.5,
+    HIGH: 0.8,
+  },
+};
+
 export const FUTURES_COINS = ["BTCUSDT", "ETHUSDT", "LTCUSDT", "XRPUSDT"];
