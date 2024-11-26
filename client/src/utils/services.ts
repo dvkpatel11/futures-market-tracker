@@ -1,7 +1,8 @@
-import { BehaviorSubject, interval } from "rxjs";
-import { catchError, switchMap, takeUntil } from "rxjs/operators";
-import { CONFIG, CRYPTO_MARKET_CONFIG, FUTURES_COINS } from "./constants";
+import { BehaviorSubject, from, interval } from "rxjs";
+import { catchError, switchMap } from "rxjs/operators";
+import { BREAKOUT_CONFIG, CONFIG, CRYPTO_MARKET_CONFIG, FUTURES_COINS } from "./constants";
 import {
+  BreakoutAlert,
   KlineData,
   MarketDataResponse,
   MarketMetrics,
@@ -220,7 +221,15 @@ export class MarketSignalDetector {
           components: {
             price: metrics.priceChange,
             volume: klines[klines.length - 1].volume,
-            trend: "positive",
+            trend: {
+              trend: "bullish",
+              reasons: [
+                `Price change of ${metrics.priceChange.toFixed(2)} exceeds threshold.`,
+                `Short-term RSI at ${metrics.rsi.shortTerm} indicates strong buying pressure.`,
+                `Medium-term RSI at ${metrics.rsi.mediumTerm} supports upward momentum.`,
+                `Volatility at ${metrics.volatility} is below the threshold, suggesting stability.`,
+              ],
+            },
             priceChangePercent: metrics.priceChangePercent,
           },
         }
@@ -231,7 +240,7 @@ export class MarketSignalDetector {
     if (signals.length === 0) return null;
 
     const overallStrength = signals.reduce((sum, signal) => sum + signal.strength, 0);
-    const validSignals = signals.filter((signal) => signal.components.trend === "positive");
+    const validSignals = signals.filter((signal) => signal.components.trend.trend === "bullish");
 
     return {
       symbol: "SYMBOL", // Replace with actual symbol
@@ -251,41 +260,129 @@ export class MarketSignalDetector {
   }
 }
 
+export class BreakoutDetector {
+  private lastBreakoutAlerts: Record<string, BreakoutAlert> = {};
+
+  detectBreakout(
+    symbol: string,
+    klines: KlineData[],
+    marketMetrics: MarketMetrics,
+    timeframe: string
+  ): BreakoutAlert | null {
+    const latestKline = klines[klines.length - 1];
+    const baseKline = klines[0];
+
+    // Calculate percentage move
+    const percentageMove = Math.abs(((latestKline.close - baseKline.close) / baseKline.close) * 100);
+
+    // Check against breakout thresholds
+    const breakoutThreshold = this.getBreakoutThreshold(percentageMove);
+    if (!breakoutThreshold) return null;
+
+    // Check cooldown
+    const lastAlert = this.lastBreakoutAlerts[symbol];
+    if (lastAlert && Date.now() - lastAlert.timestamp < BREAKOUT_CONFIG.cooldown) {
+      return null;
+    }
+
+    // Determine trend
+    const trendAnalysis = this.analyzeTrend(marketMetrics);
+
+    const breakoutAlert: BreakoutAlert = {
+      symbol,
+      timestamp: Date.now(),
+      breakoutType: breakoutThreshold,
+      currentPrice: latestKline.close,
+      priceAtBreakout: baseKline.close,
+      percentageMove,
+      timeframe,
+      trend: trendAnalysis.trend,
+      volumeProfile: {
+        current: latestKline.volume,
+        trend: marketMetrics.volumeProfile.trend,
+      },
+      momentum: marketMetrics.momentum,
+    };
+
+    // Update last breakout alert
+    this.lastBreakoutAlerts[symbol] = breakoutAlert;
+
+    return breakoutAlert;
+  }
+
+  private getBreakoutThreshold(percentageMove: number): "short" | "medium" | "large" | "extreme" | null {
+    const { thresholds } = BREAKOUT_CONFIG;
+
+    if (percentageMove >= thresholds.extreme) return "extreme";
+    if (percentageMove >= thresholds.large) return "large";
+    if (percentageMove >= thresholds.medium) return "medium";
+    if (percentageMove >= thresholds.short) return "short";
+
+    return null;
+  }
+
+  private analyzeTrend(metrics: MarketMetrics): {
+    trend: "bullish" | "bearish" | "neutral";
+    reasons: string[];
+  } {
+    const trendFactors = [
+      metrics.momentum.shortTerm > 70 ? 1 : metrics.momentum.shortTerm < 30 ? -1 : 0,
+      metrics.momentum.mediumTerm > 70 ? 1 : metrics.momentum.mediumTerm < 30 ? -1 : 0,
+      metrics.priceChange > 0 ? 1 : metrics.priceChange < 0 ? -1 : 0,
+      metrics.volumeProfile.trend === "increasing" ? 1 : metrics.volumeProfile.trend === "decreasing" ? -1 : 0,
+    ];
+
+    const trendScore = trendFactors.reduce((sum, factor) => sum + factor, 0);
+
+    return {
+      trend: trendScore > 0 ? "bullish" : trendScore < 0 ? "bearish" : "neutral",
+      reasons: [], // You can expand this with detailed reasoning
+    };
+  }
+}
+
 export class MarketDataService {
   private destroy$ = new BehaviorSubject<void>(undefined);
   private marketSignals$ = new BehaviorSubject<MarketSignal | null>(null);
   private dataFetcher: MarketDataFetcher;
+  private symbols: string[];
+  private breakoutDetector = new BreakoutDetector();
+  private breakoutAlerts$ = new BehaviorSubject<BreakoutAlert[]>([]);
 
-  constructor(private symbols: string[], dataFetcher?: MarketDataFetcher) {
-    this.dataFetcher = dataFetcher || new MarketDataFetcher();
+  constructor(private s: string[]) {
+    this.dataFetcher = new MarketDataFetcher();
+    this.symbols = s;
   }
 
   startAnalysis() {
     this.symbols.forEach((symbol) => {
       interval(CONFIG.MARKET_ANALYSIS.UPDATE_FREQUENCY)
         .pipe(
-          takeUntil(this.destroy$),
-          switchMap(() => this.analyzeSymbol(symbol)),
+          switchMap(() => {
+            return from(this.analyzeSymbol(symbol));
+          }),
           catchError((error) => {
-            console.error(`Analysis error for ${symbol}:`, error);
             return [];
           })
         )
-        .subscribe();
+        .subscribe({
+          complete: () => {
+            console.log(`🏁 Completed analysis stream for ${symbol}`);
+          },
+          error: (error) => {
+            console.error(`💥 Error in analysis stream for ${symbol}:`, error);
+          },
+        });
     });
   }
 
   private async analyzeSymbol(symbol: string): Promise<void> {
+    const breakoutAlerts: BreakoutAlert[] = [];
     const symbolMetrics: Record<string, MarketMetrics> = {};
 
     for (const [timeframe, config] of Object.entries(CRYPTO_MARKET_CONFIG.timeframes)) {
       try {
-        // Fetch market data for the current timeframe
-        const marketData = await this.dataFetcher.fetchMarketData(
-          symbol,
-          config.interval,
-          100 // Adjust limit as needed
-        );
+        const marketData = await this.dataFetcher.fetchMarketData(symbol, config.interval, 100); // Adjust limit as needed
 
         const klines = marketData.klines;
         const closes = klines.map((k) => k.close);
@@ -309,7 +406,7 @@ export class MarketDataService {
         const volumeTrend = this.analyzeVolumeTrend(volumes);
 
         // Bullish signal detection
-        const isBullish = this.detectBullishConditions({
+        const bullishResult = this.detectBullishConditions({
           priceChange,
           volatility,
           momentum,
@@ -323,7 +420,8 @@ export class MarketDataService {
           priceChange,
           volatility,
           drawdown,
-          isBullish,
+          isBullish: bullishResult.isBullish,
+          bullishReasons: bullishResult.reasons,
           volumeProfile: {
             value: volumes[volumes.length - 1],
             trend: volumeTrend,
@@ -354,12 +452,61 @@ export class MarketDataService {
       }
     }
 
-    // Comprehensive market signal generation
     const marketSignal = this.generateOverallMarketSignal(symbol, symbolMetrics);
 
     if (marketSignal && marketSignal.isValid) {
       this.marketSignals$.next(marketSignal);
     }
+
+    for (const [timeframe, config] of Object.entries(CRYPTO_MARKET_CONFIG.timeframes)) {
+      try {
+        const marketData = await this.dataFetcher.fetchMarketData(symbol, config.interval, 100);
+        const klines = marketData.klines;
+        const metrics = symbolMetrics[timeframe];
+
+        // Breakout Detection
+        const breakoutAlert = this.breakoutDetector.detectBreakout(symbol, klines, metrics, timeframe);
+
+        if (breakoutAlert) {
+          breakoutAlerts.push(breakoutAlert);
+
+          // Trigger custom alert logic
+          this.triggerBreakoutAlert(breakoutAlert);
+        }
+      } catch (error) {
+        console.error(`Breakout analysis failed for ${symbol} - ${timeframe}:`, error);
+      }
+    }
+
+    if (breakoutAlerts.length > 0) {
+      const currentAlerts = this.breakoutAlerts$.getValue();
+      this.breakoutAlerts$.next([...currentAlerts, ...breakoutAlerts]);
+    }
+  }
+
+  private triggerBreakoutAlert(alert: BreakoutAlert) {
+    console.log(`🚨 Breakout Alert: ${alert.symbol}`, alert);
+
+    // Example of sending to an external service
+    this.sendBreakoutAlertToExternalService(alert);
+  }
+
+  private async sendBreakoutAlertToExternalService(alert: BreakoutAlert) {
+    try {
+      await fetch("/api/alerts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(alert),
+      });
+    } catch (error) {
+      console.error("Failed to send breakout alert:", error);
+    }
+  }
+
+  getBreakoutAlerts$() {
+    return this.breakoutAlerts$.asObservable();
   }
 
   // Helper method to calculate drawdown
@@ -390,7 +537,6 @@ export class MarketDataService {
     return "stable";
   }
 
-  // Modify method to use CONFIG constants
   private detectBullishConditions(params: {
     priceChange: number;
     volatility: number;
@@ -401,21 +547,56 @@ export class MarketDataService {
     };
     closes: number[];
     config: TimeframeConfig;
-  }): boolean {
+  }): {
+    isBullish: boolean;
+    reasons: string[];
+  } {
     const { priceChange, volatility, momentum, config } = params;
+    const reasons: string[] = [];
 
+    // Price Change Check
     const isPricePositive = priceChange > config.threshold;
+    if (isPricePositive)
+      reasons.push(`Price change (${priceChange.toFixed(2)}%) exceeds threshold (${config.threshold}%)`);
+
+    // Volatility Check
     const isLowVolatility = volatility < config.volatilityThreshold;
+    if (isLowVolatility)
+      reasons.push(`Volatility (${volatility.toFixed(2)}%) below threshold (${config.volatilityThreshold}%)`);
 
-    const momentumConditions =
-      momentum.shortTerm > CONFIG.MARKET_ANALYSIS.MOMENTUM.SHORT_TERM_RSI_THRESHOLD &&
-      momentum.mediumTerm > CONFIG.MARKET_ANALYSIS.MOMENTUM.MEDIUM_TERM_RSI_THRESHOLD &&
-      momentum.longTerm > CONFIG.MARKET_ANALYSIS.MOMENTUM.LONG_TERM_RSI_THRESHOLD;
+    // Momentum Checks with Detailed Logging
+    const momentumChecks = [
+      {
+        name: "Short-Term",
+        value: momentum.shortTerm,
+        threshold: CONFIG.MARKET_ANALYSIS.MOMENTUM.SHORT_TERM_RSI_THRESHOLD,
+      },
+      {
+        name: "Medium-Term",
+        value: momentum.mediumTerm,
+        threshold: CONFIG.MARKET_ANALYSIS.MOMENTUM.MEDIUM_TERM_RSI_THRESHOLD,
+      },
+      {
+        name: "Long-Term",
+        value: momentum.longTerm,
+        threshold: CONFIG.MARKET_ANALYSIS.MOMENTUM.LONG_TERM_RSI_THRESHOLD,
+      },
+    ];
 
+    const passedMomentumChecks = momentumChecks.filter((check) => check.value > check.threshold);
+
+    passedMomentumChecks.forEach((check) =>
+      reasons.push(`${check.name} Momentum (${check.value.toFixed(2)}) above threshold (${check.threshold})`)
+    );
+
+    const momentumConditions = passedMomentumChecks.length >= 2;
     const trendConfirmation = momentumConditions && isPricePositive;
     const riskManagement = isLowVolatility;
 
-    return trendConfirmation && riskManagement;
+    return {
+      isBullish: trendConfirmation && riskManagement,
+      reasons,
+    };
   }
 
   // Modify volatility profile determination
@@ -428,34 +609,121 @@ export class MarketDataService {
     return "extreme";
   }
 
-  private determineTrend(metrics: MarketMetrics): "bullish" | "bearish" | "neutral" {
+  private determineTrend(metrics: MarketMetrics): {
+    trend: "bullish" | "bearish" | "neutral";
+    reasons: string[];
+  } {
+    // Define detailed trend factors with explicit reasoning
     const trendFactors = [
-      // Price momentum across different time horizons
-      metrics.momentum.shortTerm > 70 ? 1 : metrics.momentum.shortTerm < 30 ? -1 : 0,
-      metrics.momentum.mediumTerm > 70 ? 1 : metrics.momentum.mediumTerm < 30 ? -1 : 0,
-      metrics.momentum.longTerm > 70 ? 1 : metrics.momentum.longTerm < 30 ? -1 : 0,
+      // Momentum Checks with Detailed Reasoning
+      {
+        factor: metrics.momentum.shortTerm > 70 ? 1 : metrics.momentum.shortTerm < 30 ? -1 : 0,
+        reason:
+          metrics.momentum.shortTerm > 70
+            ? `Strong Short-Term Bullish Momentum (RSI: ${metrics.momentum.shortTerm.toFixed(2)})`
+            : metrics.momentum.shortTerm < 30
+            ? `Weak Short-Term Momentum (RSI: ${metrics.momentum.shortTerm.toFixed(2)})`
+            : "Neutral Short-Term Momentum",
+      },
+      {
+        factor: metrics.momentum.mediumTerm > 70 ? 1 : metrics.momentum.mediumTerm < 30 ? -1 : 0,
+        reason:
+          metrics.momentum.mediumTerm > 70
+            ? `Strong Medium-Term Bullish Momentum (RSI: ${metrics.momentum.mediumTerm.toFixed(2)})`
+            : metrics.momentum.mediumTerm < 30
+            ? `Weak Medium-Term Momentum (RSI: ${metrics.momentum.mediumTerm.toFixed(2)})`
+            : "Neutral Medium-Term Momentum",
+      },
+      {
+        factor: metrics.momentum.longTerm > 70 ? 1 : metrics.momentum.longTerm < 30 ? -1 : 0,
+        reason:
+          metrics.momentum.longTerm > 70
+            ? `Strong Long-Term Bullish Momentum (RSI: ${metrics.momentum.longTerm.toFixed(2)})`
+            : metrics.momentum.longTerm < 30
+            ? `Weak Long-Term Momentum (RSI: ${metrics.momentum.longTerm.toFixed(2)})`
+            : "Neutral Long-Term Momentum",
+      },
 
-      // Price change direction
-      metrics.priceChange > 0 ? 1 : metrics.priceChange < 0 ? -1 : 0,
+      // Price Change Analysis
+      {
+        factor: metrics.priceChange > 0 ? 1 : metrics.priceChange < 0 ? -1 : 0,
+        reason:
+          metrics.priceChange > 0
+            ? `Positive Price Change (${(metrics.priceChange * 100).toFixed(2)}%)`
+            : metrics.priceChange < 0
+            ? `Negative Price Change (${(metrics.priceChange * 100).toFixed(2)}%)`
+            : "Neutral Price Movement",
+      },
 
-      // Volume trend contribution
-      metrics.volumeProfile.trend === "increasing" ? 1 : metrics.volumeProfile.trend === "decreasing" ? -1 : 0,
+      // Volume Profile Trend
+      {
+        factor:
+          metrics.volumeProfile?.trend === "increasing" ? 1 : metrics.volumeProfile?.trend === "decreasing" ? -1 : 0,
+        reason:
+          metrics.volumeProfile?.trend === "increasing"
+            ? "Increasing Trading Volume (Bullish Signal)"
+            : metrics.volumeProfile?.trend === "decreasing"
+            ? "Decreasing Trading Volume (Bearish Signal)"
+            : "Stable Trading Volume",
+      },
 
-      // Directional bias from isBullish flag
-      metrics.isBullish ? 1 : -1,
+      // Bullish Flag Contribution
+      {
+        factor: metrics.isBullish ? 1 : -1,
+        reason: metrics.isBullish
+          ? "Overall Market Conditions Indicate Bullish Sentiment"
+          : "Overall Market Conditions Suggest Caution",
+      },
 
-      // Volatility and drawdown considerations
-      metrics.volatility < 0.05 ? 1 : metrics.volatility > 0.2 ? -1 : 0,
-      metrics.drawdown < 5 ? 1 : metrics.drawdown > 20 ? -1 : 0,
+      // Volatility Consideration
+      {
+        factor: metrics.volatility < 0.05 ? 1 : metrics.volatility > 0.2 ? -1 : 0,
+        reason:
+          metrics.volatility < 0.05
+            ? `Low Volatility (${(metrics.volatility * 100).toFixed(2)}%) - Stable Market`
+            : metrics.volatility > 0.2
+            ? `High Volatility (${(metrics.volatility * 100).toFixed(2)}%) - Market Uncertainty`
+            : "Moderate Market Volatility",
+      },
+
+      // Drawdown Analysis
+      {
+        factor: metrics.drawdown < 5 ? 1 : metrics.drawdown > 20 ? -1 : 0,
+        reason:
+          metrics.drawdown < 5
+            ? `Low Drawdown (${metrics.drawdown.toFixed(2)}%) - Strong Market Resilience`
+            : metrics.drawdown > 20
+            ? `Significant Drawdown (${metrics.drawdown.toFixed(2)}%) - Potential Market Weakness`
+            : "Moderate Market Drawdown",
+      },
     ];
 
-    // Calculate trend score
-    const trendScore = trendFactors.reduce((sum, factor) => sum + factor, 0);
+    // Calculate trend score and collect reasons
+    const trendAnalysis = trendFactors.reduce(
+      (analysis, factor) => {
+        analysis.score += factor.factor;
+        if (factor.factor !== 0) {
+          analysis.reasons.push(factor.reason);
+        }
+        return analysis;
+      },
+      { score: 0, reasons: [] as string[] }
+    );
 
     // Determine trend based on score
-    if (trendScore >= 3) return "bullish";
-    if (trendScore <= -3) return "bearish";
-    return "neutral";
+    let trend: "bullish" | "bearish" | "neutral";
+    if (trendAnalysis.score >= 3) {
+      trend = "bullish";
+    } else if (trendAnalysis.score <= -3) {
+      trend = "bearish";
+    } else {
+      trend = "neutral";
+    }
+
+    return {
+      trend,
+      reasons: trendAnalysis.reasons,
+    };
   }
 
   // In generateOverallMarketSignal method
@@ -511,7 +779,7 @@ export class MarketDataService {
 export class MarketDataFetcher {
   private baseUrl: string;
 
-  constructor(baseUrl: string = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000") {
+  constructor(baseUrl: string = process.env.REACT_APP_API_BASE_URL || "http://localhost:8080") {
     this.baseUrl = baseUrl;
   }
 
@@ -551,7 +819,6 @@ export class MarketDataFetcher {
         limit,
       });
 
-      // Comprehensive validation of returned data
       if (!data.klines || !Array.isArray(data.klines)) {
         throw new Error("Invalid klines data received");
       }
@@ -579,5 +846,72 @@ export class MarketDataFetcher {
   async fetchMarketCap(symbol: string): Promise<number> {
     const marketData = await this.fetchMarketData(symbol, "1h", 1);
     return marketData.marketCap;
+  }
+}
+
+export class AlertService {
+  private lastAlerts: Record<string, BreakoutAlert> = {}; // Store last alerts per symbol
+  private readonly alertCooldown = BREAKOUT_CONFIG.cooldown; // Alert cooldown in milliseconds
+
+  constructor(private breakoutDetector: BreakoutDetector) {}
+  handleAlerts(
+    symbol: string,
+    klines: KlineData[],
+    marketMetrics: MarketMetrics,
+    tickerData: TickerData,
+    config: TimeframeConfig
+  ) {
+    // Check if we need to skip alerting based on cooldown
+    const lastAlert = this.lastAlerts[symbol];
+    const currentTime = Date.now();
+
+    if (lastAlert && currentTime - lastAlert.timestamp < this.alertCooldown) {
+      // Skip alert if it's within cooldown period
+      return;
+    }
+
+    // Check for Breakout Alerts
+    const breakoutAlert = this.breakoutDetector.detectBreakout(symbol, klines, marketMetrics, config.interval);
+    if (breakoutAlert) {
+      this.emitAlert(breakoutAlert);
+      return;
+    }
+
+    // Check for Bullish Signals if no breakout alert is detected
+    const bullishSignal = MarketSignalDetector.detectBullishSignals(klines, config);
+    if (bullishSignal) {
+      this.emitAlert({
+        symbol,
+        timestamp: Date.now(),
+        breakoutType: "short", // Default to "short" for bullish signals (or adjust as needed)
+        currentPrice: tickerData.lastPrice,
+        priceAtBreakout: tickerData.lastPrice, // Replace with logic for price at breakout
+        percentageMove: bullishSignal.strength, // Use bullish signal strength as percentage
+        timeframe: config.interval,
+        trend: bullishSignal.strength > 0 ? "bullish" : "bearish", // Assuming positive strength indicates bullish trend
+        volumeProfile: {
+          current: marketMetrics.volumeProfile.value, // Assuming volume is part of market metrics
+          trend: marketMetrics.volumeProfile.trend, // Add volume trend to market metrics
+        },
+        momentum: {
+          shortTerm: marketMetrics.momentum.shortTerm,
+          mediumTerm: marketMetrics.momentum.mediumTerm,
+          longTerm: marketMetrics.momentum.longTerm,
+        },
+      });
+      return;
+    }
+  }
+
+  /**
+   * Emits the breakout or bullish signal alert to the alert stream.
+   * @param alert The alert object to emit.
+   */
+  private emitAlert(alert: BreakoutAlert | MarketSignal) {
+    if ("breakoutType" in alert) {
+      // Ensure alert has the correct structure as a BreakoutAlert
+      this.lastAlerts[alert.symbol] = alert;
+    }
+    alertStream$.next(alert);
   }
 }

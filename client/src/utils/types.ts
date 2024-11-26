@@ -38,7 +38,7 @@ export interface TimeframeSignal {
   components: {
     price: number;
     volume: number;
-    trend: string;
+    trend: { trend: "bullish" | "bearish" | "neutral"; reasons: string[] };
     priceChangePercent: number;
   };
 }
@@ -58,6 +58,7 @@ export interface MarketMetrics {
   volatility: number;
   drawdown: number;
   isBullish: boolean;
+  bullishReasons?: string[];
   volumeProfile: {
     value: number;
     trend: "increasing" | "decreasing" | "stable";
@@ -110,5 +111,37 @@ export interface MarketConfig {
       extreme: number;
     };
     lookbackPeriods: Record<string, number>;
+  };
+}
+
+// Add to types.ts
+export interface BreakoutConfig {
+  thresholds: {
+    short: number; // e.g., 3%
+    medium: number; // e.g., 5%
+    large: number; // e.g., 7%
+    extreme: number; // e.g., 10%
+  };
+  timeframes: string[]; // Which timeframes to monitor
+  cooldown: number; // Minimum time between alerts for same symbol
+}
+
+export interface BreakoutAlert {
+  symbol: string;
+  timestamp: number;
+  breakoutType: "short" | "medium" | "large" | "extreme";
+  currentPrice: number;
+  priceAtBreakout: number;
+  percentageMove: number;
+  timeframe: string;
+  trend: "bullish" | "bearish" | "neutral";
+  volumeProfile: {
+    current: number;
+    trend: "increasing" | "decreasing" | "stable";
+  };
+  momentum: {
+    shortTerm: number;
+    mediumTerm: number;
+    longTerm: number;
   };
 }

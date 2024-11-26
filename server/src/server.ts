@@ -7,7 +7,7 @@ import { RateLimiter } from "./rateLimiter.js";
 import type { KlineData, MarketData, MarketDataResponse, SubscribeMessage, TickerData } from "./types.js";
 
 // ================== Constants ==================
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8080;
 const BINANCE_FUTURES_WS = "wss://fstream.binance.com/stream";
 const BINANCE_FUTURES_API = "https://fapi.binance.com/fapi/v1";
 const HEARTBEAT_INTERVAL = 30000;
