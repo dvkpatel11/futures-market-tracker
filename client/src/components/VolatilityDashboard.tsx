@@ -16,8 +16,8 @@ import {
 } from "@mui/material";
 import { Wifi, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
-import { FUTURES_COINS, TIMEFRAMES } from "../utils/constants";
-import { connectionStatus$, MarketDataManager, marketState$ } from "../utils/services";
+import { FUTURES_COINS, CRYPTO_MARKET_CONFIG } from "../utils/constants";
+import { connectionStatus$,  marketState$ } from "../utils/services";
 import MarketPopover from "./MarketPopover";
 
 // Styled components
@@ -109,7 +109,7 @@ const VolatilityDashboard = () => {
               <TableCell>Symbol</TableCell>
               <TableCell>Price</TableCell>
               <TableCell>Market Cap</TableCell>
-              {Object.keys(TIMEFRAMES).map((timeframe) => (
+              {Object.keys(CRYPTO_MARKET_CONFIG.timeframes).map((timeframe) => (
                 <TableCell key={timeframe} align="center">
                   {timeframe}
                 </TableCell>
@@ -122,7 +122,7 @@ const VolatilityDashboard = () => {
                 <TableCell>{symbol}</TableCell>
                 <TableCell>{marketStates[symbol]?.price?.toFixed(2) || "N/A"}</TableCell>
                 <TableCell>{marketStates[symbol]?.marketCap?.toFixed(0) || "N/A"}</TableCell>
-                {Object.keys(TIMEFRAMES).map((timeframe) => {
+                {Object.keys(CRYPTO_MARKET_CONFIG.timeframes).map((timeframe) => {
                   const metrics = marketStates[symbol]?.metrics?.[timeframe];
                   const priceChange = metrics?.priceChange || 0;
 

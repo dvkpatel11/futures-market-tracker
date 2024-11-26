@@ -1,260 +1,298 @@
-import axios from "axios";
-import { BehaviorSubject } from "rxjs";
-import { CRYPTO_MARKET_CONFIG, FUTURES_COINS, TIMEFRAMES } from "./constants";
-import { KlineData, MarketMetrics, MarketSignal, MarketState, TimeframeSignal } from "./types";
+import { BehaviorSubject, interval } from "rxjs";
+import { catchError, switchMap, takeUntil } from "rxjs/operators";
+import { CRYPTO_MARKET_CONFIG, FUTURES_COINS } from "./constants";
+import { KlineData, MarketSignal, MarketState, TimeframeConfig, TimeframeSignal } from "./types";
 
+// Stream subjects
 export const connectionStatus$ = new BehaviorSubject<boolean>(false);
 export const marketState$ = new BehaviorSubject<Record<string, MarketState>>({});
+export const alertStream$ = new BehaviorSubject<any>(null);
 
-export class MarketDataManager {
+// Constants
+const WS_RECONNECT_DELAY = 1000;
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:5000";
+const WS_BASE_URL = process.env.REACT_APP_WS_BASE_URL || "ws://localhost:5000";
+
+// WebSocket Service
+export class WebSocketService {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private readonly MAX_RECONNECT_ATTEMPTS = 5;
-  private updateIntervals: NodeJS.Timeout[] = [];
-
-  private readonly WS_URL = process.env.REACT_APP_WS_URL || "ws://localhost:5000";
-  private readonly RECONNECT_DELAY = 1000;
+  private maxReconnectAttempts = 5;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private messageQueue: Set<string> = new Set();
+  private processingInterval: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.initialize();
+    this.handleWebSocketMessage = this.handleWebSocketMessage.bind(this);
+    this.setupMessageProcessor();
   }
 
-  initialize(): void {
-    this.connectWebSocket();
-    this.setupMetricsUpdates();
-    this.setupMomentumDetection();
+  private setupMessageProcessor() {
+    this.processingInterval = setInterval(() => {
+      if (this.messageQueue.size > 0) {
+        const messages = Array.from(this.messageQueue);
+        this.messageQueue.clear();
+        messages.forEach((msg) => this.processMessage(JSON.parse(msg)));
+      }
+    }, 100); // Process messages every 100ms
   }
 
-  private connectWebSocket(): void {
-    this.ws = new WebSocket(this.WS_URL);
+  connect() {
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+
+    this.ws = new WebSocket(WS_BASE_URL);
 
     this.ws.onopen = () => {
+      console.log("WebSocket connected");
       connectionStatus$.next(true);
-      this.subscribeToMarkets(FUTURES_COINS);
+      this.reconnectAttempts = 0;
+
+      // Subscribe to market data streams
+      this.subscribe(FUTURES_COINS.map((symbol) => `${symbol.toLowerCase()}@aggTrade`));
     };
 
     this.ws.onclose = () => {
+      console.log("WebSocket disconnected");
       connectionStatus$.next(false);
       this.handleReconnect();
     };
 
-    this.ws.onmessage = this.processWebSocketMessage.bind(this);
+    this.ws.onerror = (error) => {
+      console.error("WebSocket error:", error);
+      this.ws?.close();
+    };
+
+    this.ws.onmessage = this.handleWebSocketMessage;
   }
 
-  private subscribeToMarkets(symbols: string[]): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      symbols.forEach((symbol) => {
-        const stream = `${symbol.toLowerCase()}@ticker`;
-        this.ws?.send(
-          JSON.stringify({
-            method: "SUBSCRIBE",
-            params: [stream],
-            id: Date.now(),
-          })
-        );
-      });
-    }
-  }
-
-  private processWebSocketMessage(event: MessageEvent): void {
+  private handleWebSocketMessage(event: MessageEvent) {
     try {
-      const data = JSON.parse(event.data);
-      this.updateMarketState(data);
+      this.messageQueue.add(event.data);
     } catch (error) {
-      console.error("WebSocket message processing error:", error);
+      console.error("Error queuing WebSocket message:", error);
     }
   }
 
-  private updateMarketState(tickerData: any): void {
-    const currentState = marketState$.value;
-    const symbol = tickerData.s;
-
-    if (symbol) {
-      const updatedState: Record<string, MarketState> = {
-        ...currentState,
-        [symbol]: {
-          ...(currentState[symbol] || {}),
-          symbol,
-          price: parseFloat(tickerData.c),
-          volume: parseFloat(tickerData.v),
-          marketCap: 0, // You'll need to fetch this separately
-        },
-      };
-
-      marketState$.next(updatedState);
-    }
-  }
-
-  private setupMetricsUpdates(): void {
-    FUTURES_COINS.forEach((symbol) => {
-      Object.keys(TIMEFRAMES).forEach(async (timeframe) => {
-        const updateInterval = setInterval(async () => {
-          try {
-            const metrics = await this.updateMarketMetrics(symbol, timeframe);
-            const currentState = marketState$.value;
-
-            marketState$.next({
-              ...currentState,
-              [symbol]: {
-                ...currentState[symbol],
-                metrics: {
-                  ...(currentState[symbol]?.metrics || {}),
-                  [timeframe]: metrics,
-                },
-              },
-            });
-          } catch (error) {
-            console.error(`Metrics update failed for ${symbol} - ${timeframe}:`, error);
-          }
-        }, TIMEFRAMES[timeframe].seconds * 1000);
-
-        this.updateIntervals.push(updateInterval);
-      });
-    });
-  }
-
-  private setupMomentumDetection(): void {
-    FUTURES_COINS.forEach((symbol) => {
-      const detectionInterval = setInterval(async () => {
-        try {
-          const marketSignal = await this.detectMarketSignals(symbol);
-          // You can add additional logic for alerts or signal processing here
-        } catch (error) {
-          console.error(`Momentum detection failed for ${symbol}:`, error);
-        }
-      }, CRYPTO_MARKET_CONFIG.environment.updateFrequency);
-
-      this.updateIntervals.push(detectionInterval);
-    });
-  }
-
-  private async updateMarketMetrics(symbol: string, timeframe: string): Promise<MarketMetrics> {
-    const config = TIMEFRAMES[timeframe];
-    const klines = await this.fetchKlineData(symbol, config.interval, config.seconds);
-
-    return this.calculateMetrics(klines, config);
-  }
-
-  private async fetchKlineData(symbol: string, interval: string, limit: number = 100): Promise<KlineData[]> {
+  private processMessage(data: any) {
     try {
-      const response = await axios.get(`/api/klines`, {
-        params: { symbol, interval, limit },
-      });
-
-      return response.data.map((kline: any) => ({
-        timestamp: kline.timestamp,
-        open: parseFloat(kline.open),
-        high: parseFloat(kline.high),
-        low: parseFloat(kline.low),
-        close: parseFloat(kline.close),
-        volume: parseFloat(kline.volume),
-        price: parseFloat(kline.close),
-        marketCap: 0, // Fetch separately if needed
-      }));
-    } catch (error) {
-      console.error(`Failed to fetch klines for ${symbol}:`, error);
-      return [];
-    }
-  }
-
-  private async detectMarketSignals(symbol: string): Promise<MarketSignal> {
-    const signals: TimeframeSignal[] = [];
-    let overallStrength = 0;
-
-    for (const [timeframe, config] of Object.entries(TIMEFRAMES)) {
-      const klines = await this.fetchKlineData(symbol, config.interval, config.seconds);
-
-      const signal = this.analyzeTimeframeSignal(timeframe, klines, config);
-
-      if (signal) {
-        signals.push(signal);
-        overallStrength += signal.strength * config.volatilityMultiplier;
+      if (data.error) {
+        console.error("WebSocket error:", data.error);
+        return;
       }
+
+      const currentState = marketState$.getValue();
+      const symbol = data.symbol;
+
+      if (symbol) {
+        const updatedState: MarketState = {
+          ...currentState[symbol],
+          symbol,
+          price: parseFloat(data.price),
+          volume: parseFloat(data.volume) || currentState[symbol]?.volume || 0,
+          metrics: currentState[symbol]?.metrics || {},
+        };
+
+        marketState$.next({
+          ...currentState,
+          [symbol]: updatedState,
+        });
+      }
+    } catch (error) {
+      console.error("Error processing message:", error);
     }
+  }
+
+  private handleReconnect() {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      const delay = WS_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1);
+
+      this.reconnectTimer = setTimeout(() => {
+        console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        this.connect();
+      }, delay);
+    }
+  }
+
+  subscribe(streams: string[]) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          method: "SUBSCRIBE",
+          params: streams,
+          id: Date.now(),
+        })
+      );
+    }
+  }
+
+  disconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+    if (this.processingInterval) {
+      clearInterval(this.processingInterval);
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+}
+
+// metrics-calculator.ts
+export class MarketMetricsCalculator {
+  static calculatePriceChange(klines: KlineData[]): number {
+    if (klines.length < 2) return 0;
+    const startPrice = klines[0].close;
+    const endPrice = klines[klines.length - 1].close;
+    return ((endPrice - startPrice) / startPrice) * 100;
+  }
+
+  static calculateVolatility(klines: KlineData[]): number {
+    const returns = klines.slice(1).map((kline, i) => Math.log(kline.close / klines[i].close));
+
+    const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
+    const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+
+    return Math.sqrt(variance) * Math.sqrt(365) * 100;
+  }
+
+  static calculateRSI(prices: number[], period: number = 14): number {
+    const changes = prices.slice(1).map((price, i) => price - prices[i]);
+    const gains = changes.map((change) => (change > 0 ? change : 0));
+    const losses = changes.map((change) => (change < 0 ? -change : 0));
+
+    const avgGain = this.calculateMovingAverage(gains, period).pop() || 0;
+    const avgLoss = this.calculateMovingAverage(losses, period).pop() || 0;
+
+    if (avgLoss === 0) return 100;
+    const RS = avgGain / avgLoss;
+    return 100 - 100 / (1 + RS);
+  }
+
+  static calculateMovingAverage(data: number[], period: number): number[] {
+    const result: number[] = [];
+    for (let i = period - 1; i < data.length; i++) {
+      const slice = data.slice(i - period + 1, i + 1);
+      result.push(slice.reduce((a, b) => a + b, 0) / period);
+    }
+    return result;
+  }
+}
+
+// signal-detector.ts
+export class MarketSignalDetector {
+  static detectBullishSignals(klines: KlineData[], config: TimeframeConfig): TimeframeSignal | null {
+    const closes = klines.map((k) => k.close);
+
+    const metrics = {
+      priceChange: MarketMetricsCalculator.calculatePriceChange(klines),
+      volatility: MarketMetricsCalculator.calculateVolatility(klines),
+      rsi: {
+        shortTerm: MarketMetricsCalculator.calculateRSI(closes, 14),
+        mediumTerm: MarketMetricsCalculator.calculateRSI(closes, 30),
+      },
+    };
+
+    const isBullish =
+      metrics.priceChange > config.threshold &&
+      metrics.rsi.shortTerm > 60 &&
+      metrics.rsi.mediumTerm > 55 &&
+      metrics.volatility < config.volatilityThreshold;
+
+    return isBullish
+      ? {
+          timeframe: config.interval,
+          strength: metrics.priceChange,
+          confirmedAt: Date.now(),
+          priceAtSignal: klines[klines.length - 1].close,
+          components: {
+            price: metrics.priceChange,
+            volume: klines[klines.length - 1].volume,
+            trend: "positive",
+          },
+        }
+      : null;
+  }
+
+  static analyzeBullishSignals(signals: TimeframeSignal[]): MarketSignal | null {
+    if (signals.length === 0) return null;
+
+    const overallStrength = signals.reduce((sum, signal) => sum + signal.strength, 0);
+    const validSignals = signals.filter((signal) => signal.components.trend === "positive");
 
     return {
-      symbol,
+      symbol: "SYMBOL", // Replace with actual symbol
       timestamp: Date.now(),
-      signals,
+      signals: validSignals,
       overallStrength,
-      isValid: signals.length > 0,
+      isValid: validSignals.length >= 2,
       volatilityProfile: this.determineVolatilityProfile(overallStrength),
     };
   }
 
-  private analyzeTimeframeSignal(timeframe: string, klines: KlineData[], config: any): TimeframeSignal | null {
-    const metrics = this.calculateMetrics(klines, config);
-
-    if (metrics.priceChange > config.threshold) {
-      return {
-        timeframe,
-        strength: metrics.priceChange,
-        confirmedAt: Date.now(),
-        priceAtSignal: klines[klines.length - 1].close,
-        components: {
-          price: metrics.priceChange,
-          volume: metrics.volumeProfile.value,
-          trend: metrics.isBullish ? "positive" : "negative",
-        },
-      };
-    }
-
-    return null;
-  }
-
-  private calculateMetrics(klines: KlineData[], config: any): MarketMetrics {
-    if (!klines.length) {
-      return this.getDefaultMetrics();
-    }
-
-    const priceChange = this.calculatePriceChange(klines);
-    const volatility = this.calculateVolatility(klines);
-    const drawdown = this.calculateDrawdown(klines);
-    const volumeProfile = this.calculateVolumeProfile(klines);
-    const momentum = this.calculateMomentum(klines);
-
-    return {
-      lastUpdate: Date.now(),
-      priceChange: this.normalizeMetric(priceChange),
-      volatility: this.normalizeMetric(volatility * config.volatilityMultiplier),
-      drawdown: this.normalizeMetric(drawdown),
-      isBullish: this.determineTrend(priceChange, volatility, drawdown, config),
-      volumeProfile,
-      momentum,
-    };
-  }
-
-  // Include other calculation methods from the previous MarketMetricsCalculator
-  // (calculatePriceChange, calculateVolatility, calculateDrawdown, etc.)
-
-  private determineVolatilityProfile(strength: number): "low" | "medium" | "high" | "extreme" {
+  private static determineVolatilityProfile(strength: number): "low" | "medium" | "high" | "extreme" {
     if (strength < 0.2) return "low";
     if (strength < 0.5) return "medium";
     if (strength < 0.8) return "high";
     return "extreme";
   }
+}
 
-  private getDefaultMetrics(): MarketMetrics {
-    return {
-      lastUpdate: Date.now(),
-      priceChange: 0,
-      volatility: 0,
-      drawdown: 0,
-      isBullish: false,
-      volumeProfile: {
-        value: 0,
-        trend: "stable",
-      },
-      momentum: {
-        shortTerm: 50,
-        mediumTerm: 50,
-        longTerm: 50,
-      },
-    };
+export class MarketDataService {
+  private destroy$ = new BehaviorSubject<void>(undefined);
+  private marketSignals$ = new BehaviorSubject<MarketSignal | null>(null);
+
+  constructor(
+    private symbols: string[],
+    private dataFetcher: (symbol: string, interval: string) => Promise<KlineData[]>
+  ) {}
+
+  startAnalysis() {
+    this.symbols.forEach((symbol) => {
+      interval(CRYPTO_MARKET_CONFIG.environment.updateFrequency)
+        .pipe(
+          takeUntil(this.destroy$),
+          switchMap(() => this.analyzeSymbol(symbol)),
+          catchError((error) => {
+            console.error(`Analysis error for ${symbol}:`, error);
+            return [];
+          })
+        )
+        .subscribe();
+    });
   }
 
-  cleanup(): void {
-    this.updateIntervals.forEach(clearInterval);
-    this.ws?.close();
+  private async analyzeSymbol(symbol: string): Promise<void> {
+    const bullishSignals: TimeframeSignal[] = [];
+
+    for (const [timeframe, config] of Object.entries(CRYPTO_MARKET_CONFIG.timeframes)) {
+      try {
+        const klines = await this.dataFetcher(symbol, config.interval);
+        const signal = MarketSignalDetector.detectBullishSignals(klines, config);
+
+        if (signal) {
+          bullishSignals.push(signal);
+        }
+      } catch (error) {
+        console.error(`Analysis failed for ${symbol} - ${timeframe}:`, error);
+      }
+    }
+
+    const marketSignal = MarketSignalDetector.analyzeBullishSignals(bullishSignals);
+
+    if (marketSignal && marketSignal.isValid) {
+      this.marketSignals$.next(marketSignal);
+    }
+  }
+
+  getMarketSignals$() {
+    return this.marketSignals$.asObservable();
+  }
+
+  cleanup() {
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 }

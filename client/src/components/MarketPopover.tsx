@@ -1,14 +1,15 @@
 import { Box, Popover, Typography } from "@mui/material";
 import { Activity, ArrowDownCircle, TrendingDown, TrendingUp } from "lucide-react";
 import React, { useMemo, useState } from "react";
-import { MarketMetrics } from "../utils/types";
+import { MarketMetrics, MarketSignal } from "../utils/types";
 
 interface MarketPopoverProps {
-  metrics: MarketMetrics;
+  metrics?: MarketMetrics;
+  signal?: MarketSignal;
   children: React.ReactNode;
 }
 
-const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, children }) => {
+const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, signal, children }) => {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
   const handleOpen = (event: React.MouseEvent<HTMLElement>) => {
@@ -19,13 +20,23 @@ const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, children }) => {
     setAnchorEl(null);
   };
 
-  // Simplified signal strength calculation
   const signalStrength = useMemo(() => {
+    if (!metrics) return "No Data";
+
     const strength = Math.abs(metrics.priceChange);
     if (strength > 15) return "Strong";
     if (strength > 7) return "Moderate";
     return "Weak";
-  }, [metrics.priceChange]);
+  }, [metrics?.priceChange]);
+
+  // Early return if no metrics
+  if (!metrics) {
+    return (
+      <span onClick={handleOpen} style={{ cursor: "pointer" }}>
+        {children}
+      </span>
+    );
+  }
 
   return (
     <>
@@ -61,14 +72,14 @@ const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, children }) => {
           <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
             <Activity size={18} />
             <Typography variant="body2" sx={{ ml: 1 }}>
-              Volatility: {metrics.volatility.toFixed(2)}%
+              Volatility: {typeof metrics.volatility === "number" ? metrics.volatility.toFixed(2) : "N/A"}%
             </Typography>
           </Box>
 
           <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
             <ArrowDownCircle size={18} />
             <Typography variant="body2" sx={{ ml: 1 }}>
-              Max Drawdown: {metrics.drawdown.toFixed(2)}%
+              Max Drawdown: {typeof metrics.drawdown === "number" ? metrics.drawdown.toFixed(2) : "N/A"}%
             </Typography>
           </Box>
 
@@ -91,15 +102,35 @@ const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, children }) => {
 
           <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
             <Typography variant="body2">
-              Volume: {metrics.volumeProfile.value.toFixed(2)} ({metrics.volumeProfile.trend})
+              Volume:{" "}
+              {typeof metrics.volumeProfile?.value === "number" ? metrics.volumeProfile.value.toFixed(2) : "N/A"}(
+              {metrics.volumeProfile?.trend || "N/A"})
             </Typography>
           </Box>
 
           <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
-            <Typography variant="caption">Short Term: {metrics.momentum.shortTerm.toFixed(2)}</Typography>
-            <Typography variant="caption">Medium Term: {metrics.momentum.mediumTerm.toFixed(2)}</Typography>
-            <Typography variant="caption">Long Term: {metrics.momentum.longTerm.toFixed(2)}</Typography>
+            <Typography variant="caption">
+              Short Term:{" "}
+              {typeof metrics.momentum?.shortTerm === "number" ? metrics.momentum.shortTerm.toFixed(2) : "N/A"}
+            </Typography>
+            <Typography variant="caption">
+              Medium Term:{" "}
+              {typeof metrics.momentum?.mediumTerm === "number" ? metrics.momentum.mediumTerm.toFixed(2) : "N/A"}
+            </Typography>
+            <Typography variant="caption">
+              Long Term: {typeof metrics.momentum?.longTerm === "number" ? metrics.momentum.longTerm.toFixed(2) : "N/A"}
+            </Typography>
           </Box>
+
+          {signal && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                Overall Signal Strength: {signal.overallStrength.toFixed(2)}
+                <br />
+                Volatility Profile: {signal.volatilityProfile}
+              </Typography>
+            </Box>
+          )}
 
           <Typography
             variant="caption"
@@ -110,7 +141,7 @@ const MarketPopover: React.FC<MarketPopoverProps> = ({ metrics, children }) => {
               fontSize: "0.7rem",
             }}
           >
-            Last updated: {new Date(metrics.lastUpdate).toLocaleTimeString()}
+            Last updated: {metrics.lastUpdate ? new Date(metrics.lastUpdate).toLocaleTimeString() : "N/A"}
           </Typography>
         </Box>
       </Popover>

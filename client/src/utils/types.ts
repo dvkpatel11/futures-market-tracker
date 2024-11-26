@@ -65,3 +65,38 @@ export interface TimeframeConfig {
   volatilityThreshold: number;
   maxDrawdown: number;
 }
+export interface TimeframeSignalConfig {
+  minStrength: number; // minimum signal strength to consider (0-1)
+  weightInSignal: number; // importance in overall signal (0-1)
+  minimumCandles: number; // minimum candles needed for valid signal
+  volatilityWeight: number; // how much volatility impacts signal
+  volumeWeight: number; // how much volume impacts signal
+  trendWeight: number; // how much trend impacts signal
+}
+
+export interface AlertConfig {
+  minOverallStrength: number; // minimum combined signal strength
+  requiredTimeframes: string[]; // timeframes that must confirm
+  alertCooldown: number; // milliseconds between alerts
+  priceChangeThreshold: number; // minimum price change to trigger
+}
+
+export interface MarketConfig {
+  environment: {
+    name: string;
+    volatilityProfile: "low" | "medium" | "high" | "extreme";
+    baseVolatility: number;
+    updateFrequency: number;
+  };
+  timeframes: Record<string, TimeframeConfig>;
+  alerting: AlertConfig;
+  volatilityAdjustment: {
+    thresholdMultipliers: {
+      low: number;
+      medium: number;
+      high: number;
+      extreme: number;
+    };
+    lookbackPeriods: Record<string, number>;
+  };
+}
