@@ -3,18 +3,17 @@ import { CONFIG, FUTURES_COINS } from "../utils/constants";
 import { BreakoutAlert, MarketSignal, MarketState } from "../utils/types";
 
 // Stream subjects
-
 export const connectionStatus$ = new BehaviorSubject<boolean>(false);
 export const marketState$ = new BehaviorSubject<Record<string, MarketState>>({});
 export const alertStream$ = new BehaviorSubject<MarketSignal | BreakoutAlert | null>(null);
-// WebSocket Service
 
+// WebSocket Service
 export class WebSocketService {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = CONFIG.WS.MAX_RECONNECT_ATTEMPTS;
   private reconnectTimer: NodeJS.Timeout | null = null;
-  private messageQueue: Set<string> = new Set();
+  private messageQueue: Array<string> = [];
   private processingInterval: NodeJS.Timeout | null = null;
 
   constructor() {
@@ -24,10 +23,10 @@ export class WebSocketService {
 
   private setupMessageProcessor() {
     this.processingInterval = setInterval(() => {
-      if (this.messageQueue.size > 0) {
-        const messages = Array.from(this.messageQueue);
-        this.messageQueue.clear();
-        messages.forEach((msg) => this.processMessage(JSON.parse(msg)));
+      if (this.messageQueue.length > 0) {
+        const messages = [...this.messageQueue];
+        this.messageQueue = [];
+        messages.forEach((msg) => this.processMessage(msg));
       }
     }, CONFIG.MARKET_ANALYSIS.MESSAGE_PROCESSOR_INTERVAL);
   }
@@ -62,9 +61,10 @@ export class WebSocketService {
 
   private handleWebSocketMessage(event: MessageEvent) {
     try {
-      this.messageQueue.add(event.data);
+      const parsedData = JSON.parse(event.data);
+      this.messageQueue.push(parsedData);
     } catch (error) {
-      console.error("Error queuing WebSocket message:", error);
+      console.error("Error parsing WebSocket message:", error);
     }
   }
 
@@ -132,5 +132,8 @@ export class WebSocketService {
       this.ws.close();
       this.ws = null;
     }
+    // Reset states
+    marketState$.next({});
+    connectionStatus$.next(false);
   }
 }

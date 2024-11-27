@@ -142,8 +142,8 @@ const VolatilityDashboard: React.FC = () => {
     if (!alertConfig?.enableAlerts) return;
 
     Object.entries(marketStates).forEach(([symbol, state]) => {
-      const momentum = state.momentum;
-      if (!momentum || !momentum.isValid) return;
+      const marketSignal = state.marketSignal;
+      if (!marketSignal || !marketSignal.isValid) return;
 
       const minStrength =
         alertConfig.customAlertConfig?.minOverallStrength ?? CRYPTO_MARKET_CONFIG.alerting.minOverallStrength;
@@ -151,13 +151,15 @@ const VolatilityDashboard: React.FC = () => {
       const requiredTimeframes =
         alertConfig.customAlertConfig?.requiredTimeframes ?? CRYPTO_MARKET_CONFIG.alerting.requiredTimeframes;
 
-      const confirmedTimeframes = momentum.signals.filter((signal) => requiredTimeframes.includes(signal.timeframe));
+      const confirmedTimeframes = marketSignal.signals.filter((signal) =>
+        requiredTimeframes.includes(signal.timeframe)
+      );
 
-      const meetsStrengthThreshold = momentum.overallStrength >= minStrength;
+      const meetsStrengthThreshold = marketSignal.overallStrength >= minStrength;
       const hasRequiredTimeframes = confirmedTimeframes.length === requiredTimeframes.length;
 
       if (meetsStrengthThreshold && hasRequiredTimeframes) {
-        sendTelegramAlert(symbol, momentum);
+        sendTelegramAlert(symbol, marketSignal);
       }
     });
   }, [marketStates, alertConfig, sendTelegramAlert]);

@@ -1,5 +1,6 @@
-import { BREAKOUT_CONFIG } from "../utils/constants";
+import { BREAKOUT_CONFIG, CONFIG } from "../utils/constants";
 import { BreakoutAlert, KlineData, MarketMetrics } from "../utils/types";
+import { MarketDataService } from "./MarketDataService";
 
 export class BreakoutDetector {
   private lastBreakoutAlerts: Record<string, BreakoutAlert> = {};
@@ -11,44 +12,56 @@ export class BreakoutDetector {
     timeframe: string
   ): BreakoutAlert | null {
     const latestKline = klines[klines.length - 1];
-    const baseKline = klines[0];
+    const closes = klines.map((k) => k.close);
+    const volumes = klines.map((k) => k.volume);
 
-    // Calculate percentage move
-    const percentageMove = Math.abs(((latestKline.close - baseKline.close) / baseKline.close) * 100);
-
-    // Check against breakout thresholds
-    const breakoutThreshold = this.getBreakoutThreshold(percentageMove);
-    if (!breakoutThreshold) return null;
-
-    // Check cooldown
+    // Check cooldown for last breakout alert
     const lastAlert = this.lastBreakoutAlerts[symbol];
     if (lastAlert && Date.now() - lastAlert.timestamp < BREAKOUT_CONFIG.cooldown) {
-      return null;
+      return null; // Cooldown period not yet expired
     }
 
-    // Determine trend
-    const trendAnalysis = this.analyzeTrend(marketMetrics);
+    // Calculate Bollinger Bands
+    const { upper, lower } = this.calculateBollingerBands(closes);
 
-    const breakoutAlert: BreakoutAlert = {
-      symbol,
-      timestamp: Date.now(),
-      breakoutType: breakoutThreshold,
-      currentPrice: latestKline.close,
-      priceAtBreakout: baseKline.close,
-      percentageMove,
-      timeframe,
-      trend: trendAnalysis.trend,
-      volumeProfile: {
-        current: latestKline.volume,
-        trend: marketMetrics.volumeProfile.trend,
-      },
-      momentum: marketMetrics.momentum,
-    };
+    const currentPrice = closes[closes.length - 1];
+    const previousPrice = closes[closes.length - 2];
+    const volumeMA = this.calculateSMA(volumes.slice(-CONFIG.MARKET_ANALYSIS.INDICATOR_THRESHOLDS.VOLUME_MA_PERIOD));
+    const currentVolume = volumes[volumes.length - 1];
 
-    // Update last breakout alert
-    this.lastBreakoutAlerts[symbol] = breakoutAlert;
+    // Breakout Detection Logic
+    const isBreakingUp = currentPrice > upper && previousPrice <= upper;
+    const isBreakingDown = currentPrice < lower && previousPrice >= lower;
+    const hasVolumeConfirmation = currentVolume > volumeMA * 1.5;
 
-    return breakoutAlert;
+    if ((isBreakingUp || isBreakingDown) && hasVolumeConfirmation) {
+      const percentageMove = Math.abs(((currentPrice - previousPrice) / previousPrice) * 100);
+      const breakoutType = this.getBreakoutThreshold(percentageMove);
+
+      // Create and store the new breakout alert
+      const breakoutAlert: BreakoutAlert = {
+        timestamp: Date.now(),
+        breakoutType,
+        currentPrice,
+        priceAtBreakout: previousPrice,
+        percentageMove,
+        timeframe: "current",
+        trend: MarketDataService.determineTrend(marketMetrics),
+        volumeProfile: {
+          current: currentVolume,
+          trend: marketMetrics.volumeProfile.trend,
+        },
+        momentum: marketMetrics.momentum,
+        symbol, // Set this from the parameter in your actual implementation
+      };
+
+      // Update last breakout alert
+      this.lastBreakoutAlerts[symbol] = breakoutAlert;
+
+      return breakoutAlert;
+    }
+
+    return null; // No breakout detected
   }
 
   private getBreakoutThreshold(percentageMove: number): "short" | "medium" | "large" | "extreme" | null {
@@ -62,22 +75,21 @@ export class BreakoutDetector {
     return null;
   }
 
-  private analyzeTrend(metrics: MarketMetrics): {
-    trend: "bullish" | "bearish" | "neutral";
-    reasons: string[];
-  } {
-    const trendFactors = [
-      metrics.momentum.shortTerm > 70 ? 1 : metrics.momentum.shortTerm < 30 ? -1 : 0,
-      metrics.momentum.mediumTerm > 70 ? 1 : metrics.momentum.mediumTerm < 30 ? -1 : 0,
-      metrics.priceChange > 0 ? 1 : metrics.priceChange < 0 ? -1 : 0,
-      metrics.volumeProfile.trend === "increasing" ? 1 : metrics.volumeProfile.trend === "decreasing" ? -1 : 0,
-    ];
+  private calculateSMA(values: number[]): number {
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
 
-    const trendScore = trendFactors.reduce((sum, factor) => sum + factor, 0);
+  private calculateBollingerBands(values: number[]) {
+    const sma = this.calculateSMA(values.slice(-CONFIG.MARKET_ANALYSIS.INDICATOR_THRESHOLDS.BOLLINGER_PERIOD));
+    const std = Math.sqrt(
+      values.slice(-CONFIG.MARKET_ANALYSIS.INDICATOR_THRESHOLDS.BOLLINGER_PERIOD).reduce((sum, value) => sum + Math.pow(value - sma, 2), 0) /
+      CONFIG.MARKET_ANALYSIS.INDICATOR_THRESHOLDS.BOLLINGER_PERIOD
+    );
 
     return {
-      trend: trendScore > 0 ? "bullish" : trendScore < 0 ? "bearish" : "neutral",
-      reasons: [], // You can expand this with detailed reasoning
+      upper: sma + CONFIG.MARKET_ANALYSIS.INDICATOR_THRESHOLDS.BOLLINGER_STD * std,
+      middle: sma,
+      lower: sma - CONFIG.MARKET_ANALYSIS.INDICATOR_THRESHOLDS.BOLLINGER_STD * std,
     };
   }
 }

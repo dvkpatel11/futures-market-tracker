@@ -1,3 +1,4 @@
+import { CONFIG } from "../utils/constants";
 import { KlineData, MarketSignal, TickerData, TimeframeConfig, TimeframeSignal } from "../utils/types";
 import { MarketMetricsCalculator } from "./MarketMetricsCalculator";
 
@@ -9,21 +10,11 @@ export class MarketSignalDetector {
   ): TimeframeSignal | null {
     const closes = klines.map((k) => k.close);
 
-    const metrics = {
-      priceChange: MarketMetricsCalculator.calculatePriceChange(klines),
-      volatility: MarketMetricsCalculator.calculateVolatility(klines),
-      rsi: {
-        shortTerm: MarketMetricsCalculator.calculateRSI(closes, 14),
-        mediumTerm: MarketMetricsCalculator.calculateRSI(closes, 30),
-      },
-      // Include additional data from ticker if available
-      priceChangePercent: tickerData?.priceChangePercent || 0,
-    };
-
+    const metrics = MarketMetricsCalculator.calculateMarketMetrics(klines, config);
     const isBullish =
       metrics.priceChange > config.threshold &&
-      metrics.rsi.shortTerm > 60 &&
-      metrics.rsi.mediumTerm > 55 &&
+      metrics.momentum.shortTerm > 60 &&
+      metrics.momentum.mediumTerm > 55 &&
       metrics.volatility < config.volatilityThreshold;
 
     return isBullish
@@ -39,8 +30,8 @@ export class MarketSignalDetector {
               trend: "bullish",
               reasons: [
                 `Price change of ${metrics.priceChange.toFixed(2)} exceeds threshold.`,
-                `Short-term RSI at ${metrics.rsi.shortTerm} indicates strong buying pressure.`,
-                `Medium-term RSI at ${metrics.rsi.mediumTerm} supports upward momentum.`,
+                `Short-term RSI at ${metrics.m``.shortTerm} indicates strong buying pressure.`,
+                `Medium-term RSI at ${metrics.m``.mediumTerm} supports upward momentum.`,
                 `Volatility at ${metrics.volatility} is below the threshold, suggesting stability.`,
               ],
             },
@@ -66,10 +57,13 @@ export class MarketSignalDetector {
     };
   }
 
-  private static determineVolatilityProfile(strength: number): "low" | "medium" | "high" | "extreme" {
-    if (strength < 0.2) return "low";
-    if (strength < 0.5) return "medium";
-    if (strength < 0.8) return "high";
+  // Modify volatility profile determination
+  public static determineVolatilityProfile(strength: number): MarketSignal["volatilityProfile"] {
+    const { LOW, MEDIUM, HIGH } = CONFIG.VOLATILITY_PROFILES;
+
+    if (strength < LOW) return "low";
+    if (strength < MEDIUM) return "medium";
+    if (strength < HIGH) return "high";
     return "extreme";
   }
 }

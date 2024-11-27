@@ -21,6 +21,41 @@ export interface TickerData {
   low: number;
 }
 
+export type TrendReason =
+  | "bullish_candlestick"
+  | "bearish_candlestick"
+  | "price_increase"
+  | "price_decrease"
+  | "strong_volume"
+  | "weak_volume"
+  | "momentum_shift"
+  | "RSI_overbought"
+  | "RSI_oversold"
+  | "RSI_stable"
+  | "uptrend"
+  | "downtrend"
+  | "sideways_trend"
+  | "significant_price_change"
+  | "high_volatility"
+  | "low_volatility"
+  | "drawdown_high"
+  | "drawdown_low"
+  | "short_term_momentum"
+  | "medium_term_momentum"
+  | "long_term_momentum"
+  | "increasing_volume"
+  | "decreasing_volume"
+  | "stable_volume"
+  | "uptrend_support"
+  | "downtrend_support"
+  | "neutral_trend"
+  | "recent_price_change";
+
+export interface Trend {
+  trend: "bullish" | "bearish" | "neutral";
+  reasons: TrendReason[];
+}
+
 export interface MarketSignal {
   symbol: string;
   timestamp: number;
@@ -38,7 +73,7 @@ export interface TimeframeSignal {
   components: {
     price: number;
     volume: number;
-    trend: { trend: "bullish" | "bearish" | "neutral"; reasons: string[] };
+    trend: Trend;
     priceChangePercent: number;
   };
 }
@@ -49,7 +84,7 @@ export interface MarketState {
   marketCap: number;
   volume: number;
   metrics: Record<string, MarketMetrics>;
-  momentum?: MarketSignal;
+  marketSignal?: MarketSignal;
 }
 
 export interface MarketMetrics {
@@ -58,15 +93,15 @@ export interface MarketMetrics {
   volatility: number;
   drawdown: number;
   isBullish: boolean;
-  bullishReasons?: string[];
+  bullishReasons: TrendReason[];
   volumeProfile: {
     value: number;
     trend: "increasing" | "decreasing" | "stable";
   };
   momentum: {
-    shortTerm: number;
-    mediumTerm: number;
-    longTerm: number;
+    shortTerm: number; // RSI (0-100) for the short-term timeframe (e.g., 5m or 1h). Indicates quick momentum shifts and recent price behavior.
+    mediumTerm: number; // RSI (0-100) for the medium-term timeframe (e.g., 4h or 1d). Reflects broader price trends and momentum over an intermediate period.
+    longTerm: number; // RSI (0-100) for the long-term timeframe (e.g., 1d, weekly). Shows overall market momentum and helps identify long-term trend direction.
   };
 }
 
@@ -78,28 +113,29 @@ export interface TimeframeConfig {
   volatilityThreshold: number;
   maxDrawdown: number;
 }
+
 export interface TimeframeSignalConfig {
-  minStrength: number; // minimum signal strength to consider (0-1)
-  weightInSignal: number; // importance in overall signal (0-1)
-  minimumCandles: number; // minimum candles needed for valid signal
-  volatilityWeight: number; // how much volatility impacts signal
-  volumeWeight: number; // how much volume impacts signal
-  trendWeight: number; // how much trend impacts signal
+  minStrength: number; // Minimum signal strength (0-1)
+  weightInSignal: number; // Weight in overall signal (0-1)
+  minimumCandles: number; // Candles needed for validity
+  volatilityWeight: number; // Impact of volatility on signal
+  volumeWeight: number; // Impact of volume on signal
+  trendWeight: number; // Impact of trend on signal
 }
 
 export interface AlertConfig {
-  minOverallStrength: number; // minimum combined signal strength
-  requiredTimeframes: string[]; // timeframes that must confirm
-  alertCooldown: number; // milliseconds between alerts
-  priceChangeThreshold: number; // minimum price change to trigger
+  minOverallStrength: number; // Combined signal strength threshold
+  requiredTimeframes: string[]; // Mandatory timeframes for validation
+  alertCooldown: number; // Time in ms before next alert
+  priceChangeThreshold: number; // % price change to trigger alert
 }
 
 export interface MarketConfig {
   environment: {
     name: string;
     volatilityProfile: "low" | "medium" | "high" | "extreme";
-    baseVolatility: number;
-    updateFrequency: number;
+    baseVolatility: number; // Base volatility for classification
+    updateFrequency: number; // Time in ms between updates
   };
   timeframes: Record<string, TimeframeConfig>;
   alerting: AlertConfig;
@@ -114,7 +150,6 @@ export interface MarketConfig {
   };
 }
 
-// Add to types.ts
 export interface BreakoutConfig {
   thresholds: {
     short: number; // e.g., 3%
@@ -122,26 +157,26 @@ export interface BreakoutConfig {
     large: number; // e.g., 7%
     extreme: number; // e.g., 10%
   };
-  timeframes: string[]; // Which timeframes to monitor
-  cooldown: number; // Minimum time between alerts for same symbol
+  timeframes: string[]; // Monitored timeframes
+  cooldown: number; // Cooldown time in ms
 }
 
 export interface BreakoutAlert {
   symbol: string;
   timestamp: number;
-  breakoutType: "short" | "medium" | "large" | "extreme";
-  currentPrice: number;
-  priceAtBreakout: number;
-  percentageMove: number;
-  timeframe: string;
-  trend: "bullish" | "bearish" | "neutral";
+  breakoutType: "short" | "medium" | "large" | "extreme" | null;
+  currentPrice: number; // Price at breakout detection
+  priceAtBreakout: number; // Price at breakout start
+  percentageMove: number; // % move since breakout
+  timeframe: string; // Timeframe for breakout
+  trend: Trend;
   volumeProfile: {
-    current: number;
+    current: number; // Current volume
     trend: "increasing" | "decreasing" | "stable";
   };
   momentum: {
-    shortTerm: number;
-    mediumTerm: number;
-    longTerm: number;
+    shortTerm: number; // RSI (0-100) for the short-term timeframe (e.g., 5m or 1h). Indicates quick momentum shifts and recent price behavior.
+    mediumTerm: number; // RSI (0-100) for the medium-term timeframe (e.g., 4h or 1d). Reflects broader price trends and momentum over an intermediate period.
+    longTerm: number; // RSI (0-100) for the long-term timeframe (e.g., 1d, weekly). Shows overall market momentum and helps identify long-term trend direction.
   };
 }

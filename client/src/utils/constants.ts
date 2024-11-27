@@ -100,6 +100,13 @@ export const CONFIG = {
     TREND_DETECTION: {
       DEFAULT_TIMEFRAMES_FOR_CONFIRMATION: 2,
     },
+
+    INDICATOR_THRESHOLDS: {
+      VOLUME_MA_PERIOD: 20,
+      PRICE_MA_PERIOD: 20,
+      BOLLINGER_PERIOD: 20,
+      BOLLINGER_STD: 2,
+    },
   },
 
   // Volatility Profile Thresholds
