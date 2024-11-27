@@ -1,0 +1,177 @@
+# Proxy Server Documentation
+
+## Overview
+
+This Node.js proxy server provides access to Binance Futures market data via WebSocket and REST API. It enables real-time data streaming and historical data retrieval for market analysis and trading applications.
+
+### Features
+
+- **WebSocket Streaming**: Stream real-time market data from Binance Futures.
+- **REST API**: Retrieve historical Kline (candlestick) data and market ticker information.
+- **Rate Limiting**: Ensures fair usage by limiting API requests per user.
+- **Data Transformation**: Converts raw Binance data into a user-friendly format.
+- **Validation**: Validates incoming parameters to prevent errors and misuse.
+- **Heartbeat Mechanism**: Maintains WebSocket connections with periodic pings.
+
+---
+
+## Installation
+
+### Prerequisites
+
+- Node.js (v16 or later)
+- npm or yarn
+
+### Steps
+
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd <repository-folder>
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Start the server:
+   ```bash
+   npm start
+   ```
+4. The server runs on port `8080` by default. Use the `PORT` environment variable to customize the port.
+
+---
+
+## Endpoints
+
+### WebSocket
+
+- **Endpoint**: `ws://<server-host>/`
+- **Messages**:
+  - **Subscribe to Streams**:
+    ```json
+    {
+      "type": "subscribe",
+      "streams": ["btcusdt@aggTrade", "ethusdt@aggTrade"]
+    }
+    ```
+  - **Response**:
+    ```json
+    {
+      "eventType": "aggTrade",
+      "eventTime": "1687654321234",
+      "symbol": "BTCUSDT",
+      "price": 30000.5,
+      "volume": 0.1,
+      "timestamp": 1687654321234
+    }
+    ```
+
+### REST API
+
+#### 1. Fetch Klines (Candlestick Data)
+
+- **Endpoint**: `GET /api/klines`
+- **Query Parameters**:
+  - `symbol` (required): Trading pair (e.g., `BTCUSDT`).
+  - `interval` (required): Time interval (e.g., `5m`, `1h`, `1d`).
+  - `limit` (optional): Number of records (default: `100`, max: `1000`).
+- **Response**:
+  ```json
+  {
+    "status": "success",
+    "klines": [
+      {
+        "timestamp": 1687654321000,
+        "open": 29900.5,
+        "high": 30000.5,
+        "low": 29850.0,
+        "close": 29980.5,
+        "volume": 12.5
+      }
+    ],
+    "symbol": "BTCUSDT",
+    "lastPrice": 29980.5,
+    "marketCap": 5000000,
+    "priceChangePercent": 2.3,
+    "high": 30050.0,
+    "low": 29800.0
+  }
+  ```
+
+#### 2. Health Check
+
+- **Endpoint**: `GET /health`
+- **Response**:
+  ```json
+  {
+    "status": "healthy",
+    "timestamp": "2024-11-27T10:30:00.000Z"
+  }
+  ```
+
+---
+
+## Rate Limiting
+
+- The server implements a rate limiter that allows up to **1200 requests per minute**.
+- Exceeding the limit results in a `429 Too Many Requests` response.
+
+---
+
+## Code Structure
+
+### Key Components
+
+1. **`WebSocketHandler`**
+
+   - Manages WebSocket connections.
+   - Subscribes to Binance streams and forwards data to clients.
+
+2. **`binanceDataService`**
+
+   - Fetches historical Kline data and ticker information from Binance API.
+
+3. **Validation Utilities**
+
+   - Validates trading pair symbols and intervals.
+
+4. **RateLimiter**
+
+   - Prevents excessive API usage.
+
+5. **Data Transformers**
+   - Converts raw Binance data into a structured format for easy consumption.
+
+---
+
+## Development Notes
+
+- **Environment Variables**:
+  - `PORT`: Port number for the server.
+- **Dependencies**:
+  - `express`: For REST API.
+  - `ws`: For WebSocket handling.
+  - `node-fetch`: For making API calls.
+  - `cors`: To handle cross-origin requests.
+
+---
+
+## Error Handling
+
+- **Validation Errors**: Returns `400 Bad Request` with a detailed message.
+- **Rate Limit Exceeded**: Returns `429 Too Many Requests`.
+- **Binance API Errors**: Returns `500 Internal Server Error` with error details.
+
+---
+
+## Future Enhancements
+
+- Add authentication for secure access.
+- Support additional Binance data streams.
+- Implement advanced rate limiting per user or IP address.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).

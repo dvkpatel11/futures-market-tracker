@@ -16,15 +16,11 @@ import {
 } from "@mui/material";
 import { Wifi, WifiOff } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
+import { AlertService } from "../services/AlertService";
+import { BreakoutDetector } from "../services/BreakoutDetector";
+import { MarketDataService } from "../services/MarketDataService";
+import { connectionStatus$, marketState$, WebSocketService } from "../services/WebSocketService";
 import { CRYPTO_MARKET_CONFIG, FUTURES_COINS } from "../utils/constants";
-import {
-  AlertService,
-  BreakoutDetector,
-  connectionStatus$,
-  MarketDataService,
-  marketState$,
-  WebSocketService,
-} from "../utils/services";
 import { AlertConfig, MarketSignal, MarketState } from "../utils/types";
 import MarketPopover from "./MarketPopover";
 import TelegramAlertSetup from "./TelegramAlertSetup";
@@ -101,11 +97,11 @@ const VolatilityDashboard: React.FC = () => {
   // Send Telegram alert if conditions are met
   const sendTelegramAlert = useCallback(
     async (symbol: string, momentum: MarketSignal) => {
-      if (!alertConfig?.enableAlerts || !alertConfig?.telegramToken || !alertConfig?.chatId) return;
+      // if (!alertConfig?.enableAlerts || !alertConfig?.telegramToken || !alertConfig?.chatId) return;
 
       const now = Date.now();
       const lastAlertTimestamp = lastAlertTimestamps[symbol] || 0;
-      const cooldown = alertConfig.customAlertConfig?.alertCooldown || CRYPTO_MARKET_CONFIG.alerting.alertCooldown;
+      const cooldown = alertConfig?.customAlertConfig?.alertCooldown || CRYPTO_MARKET_CONFIG.alerting.alertCooldown;
 
       if (now - lastAlertTimestamp < cooldown) return;
 
@@ -121,22 +117,22 @@ const VolatilityDashboard: React.FC = () => {
       // Display the alert on the dashboard first DEBUG
       setPendingAlerts((prev) => [message, ...prev]);
 
-      try {
-        await fetch(`https://api.telegram.org/bot${alertConfig.telegramToken}/sendMessage`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            chat_id: alertConfig.chatId,
-            text: message,
-          }),
-        });
+      // try {
+      //   await fetch(`https://api.telegram.org/bot${alertConfig.telegramToken}/sendMessage`, {
+      //     method: "POST",
+      //     headers: {
+      //       "Content-Type": "application/json",
+      //     },
+      //     body: JSON.stringify({
+      //       chat_id: alertConfig.chatId,
+      //       text: message,
+      //     }),
+      //   });
 
-        setLastAlertTimestamps((prev) => ({ ...prev, [symbol]: now }));
-      } catch (error) {
-        console.error("Failed to send Telegram alert", error);
-      }
+      //   setLastAlertTimestamps((prev) => ({ ...prev, [symbol]: now }));
+      // } catch (error) {
+      //   console.error("Failed to send Telegram alert", error);
+      // }
     },
     [alertConfig, lastAlertTimestamps]
   );
@@ -253,7 +249,7 @@ const VolatilityDashboard: React.FC = () => {
       console.error("Refresh error:", refreshError);
       setError("Failed to refresh market data");
     }
-  }, [webSocketService, marketDataService]);
+  }, [webSocketService, marketDataService, initializeServices]);
 
   // Evaluate market signals whenever market states or alert config changes
   useEffect(() => {

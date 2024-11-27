@@ -162,6 +162,12 @@ wss.on("connection", (ws) => {
   const handler = new WebSocketHandler(ws);
 
   ws.on("message", (message) => {
+    const { allowed, remaining } = rateLimiter.checkLimit();
+    if (!allowed) {
+      ws.send(JSON.stringify({ error: "Rate limit exceeded", remaining }));
+      return;
+    }
+
     try {
       const data = JSON.parse(message.toString()) as SubscribeMessage;
       if (data.type === "subscribe") {
@@ -233,11 +239,17 @@ const binanceDataService = {
 
 // ================== REST API Routes ==================
 app.get("/api/klines", async (req: any, res: any) => {
-  try {
-    if (!rateLimiter.checkLimit()) {
-      return res.status(429).json({ error: "Rate limit exceeded" });
-    }
+  // Check rate limit
+  const { allowed, remaining } = rateLimiter.checkLimit();
 
+  if (!allowed) {
+    return res.status(429).json({
+      error: "Rate limit exceeded",
+      remaining,
+    });
+  }
+
+  try {
     const symbol = validators.symbol(req.query.symbol as string);
     const interval = validators.interval(req.query.interval as string);
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 100, 1), 1000);
@@ -251,26 +263,30 @@ app.get("/api/klines", async (req: any, res: any) => {
 
       // Send both klines and market data
       return res.json({
+        status: "success",
         klines,
         ...tickerData,
       } as MarketDataResponse);
     } catch (fetchError) {
       console.error("Data fetching error:", fetchError);
       return res.status(500).json({
-        error: "Failed to fetch data from Binance",
+        status: "error",
+        message: "Failed to fetch data from Binance",
         details: fetchError instanceof Error ? fetchError.message : String(fetchError),
       });
     }
   } catch (validationError) {
     console.error("Validation error:", validationError);
     return res.status(400).json({
-      error: "Invalid request parameters",
+      status: "error",
+      message: "Invalid request parameters",
       details: validationError instanceof Error ? validationError.message : String(validationError),
     });
   }
 });
 
-app.get("/health", (_req: express.Request, res: express.Response) => {
+// Health Check Endpoint
+app.get("/health", (_req, res) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
@@ -281,6 +297,15 @@ server.listen(PORT, () => {
 
 process.on("SIGTERM", () => {
   console.log("SIGTERM received. Closing server...");
+  server.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", () => {
+  // Handle Ctrl+C
+  console.log("SIGINT received. Closing server...");
   server.close(() => {
     console.log("Server closed");
     process.exit(0);
