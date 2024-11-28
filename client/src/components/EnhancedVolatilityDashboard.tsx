@@ -88,15 +88,21 @@ const EnhancedVolatilityDashboard: React.FC = () => {
       const bState = marketStates[b];
 
       let comparison = 0;
-      switch (sortConfig.key) {
-        case "price":
-          comparison = (aState?.price || 0) - (bState?.price || 0);
-          break;
-        case "marketCap":
-          comparison = (aState?.marketCap || 0) - (bState?.marketCap || 0);
-          break;
-        default:
-          comparison = a.localeCompare(b);
+      if (Object.keys(CRYPTO_MARKET_CONFIG.timeframes).includes(sortConfig.key)) {
+        const aMetric = aState?.metrics?.[sortConfig.key]?.priceChange || 0;
+        const bMetric = bState?.metrics?.[sortConfig.key]?.priceChange || 0;
+        comparison = aMetric - bMetric;
+      } else {
+        switch (sortConfig.key) {
+          case "price":
+            comparison = (aState?.price || 0) - (bState?.price || 0);
+            break;
+          case "marketCap":
+            comparison = (aState?.marketCap || 0) - (bState?.marketCap || 0);
+            break;
+          default:
+            comparison = a.localeCompare(b);
+        }
       }
 
       return sortConfig.direction === "asc" ? comparison : -comparison;
@@ -235,10 +241,15 @@ const EnhancedVolatilityDashboard: React.FC = () => {
                   Market Cap
                 </TableSortLabel>
               </TableCell>
-              {/* TODO Timeframe need to be SORTABLE */}
               {Object.keys(CRYPTO_MARKET_CONFIG.timeframes).map((timeframe) => (
                 <TableCell key={timeframe} align="center">
-                  {timeframe}
+                  <TableSortLabel
+                    active={sortConfig.key === timeframe}
+                    direction={sortConfig.key === timeframe ? sortConfig.direction : "asc"}
+                    onClick={() => handleSortRequest(timeframe as keyof MarketState)}
+                  >
+                    {timeframe}
+                  </TableSortLabel>
                 </TableCell>
               ))}
             </TableRow>
