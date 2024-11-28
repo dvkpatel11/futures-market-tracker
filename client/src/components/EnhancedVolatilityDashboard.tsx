@@ -235,7 +235,7 @@ const EnhancedVolatilityDashboard: React.FC = () => {
                   Market Cap
                 </TableSortLabel>
               </TableCell>
-              {/* Timeframe columns remain the same */}
+              {/* TODO Timeframe need to be SORTABLE */}
               {Object.keys(CRYPTO_MARKET_CONFIG.timeframes).map((timeframe) => (
                 <TableCell key={timeframe} align="center">
                   {timeframe}
@@ -268,9 +268,10 @@ const EnhancedVolatilityDashboard: React.FC = () => {
                   <TableCell>{marketState?.marketCap ? marketState.marketCap.toLocaleString() : "..."}</TableCell>
                   {Object.keys(CRYPTO_MARKET_CONFIG.timeframes).map((timeframe) => {
                     const metrics = marketState?.metrics?.[timeframe];
+                    const signal = marketState?.marketSignal;
                     return (
                       <TableCell key={timeframe} align="center">
-                        <MarketPopover metrics={metrics}>
+                        <MarketPopover metrics={metrics} signal={signal}>
                           {metrics?.priceChange ? `${metrics.priceChange.toFixed(2)}%` : "..."}
                         </MarketPopover>
                       </TableCell>
