@@ -137,14 +137,10 @@ export class MarketMetricsCalculator {
     return maxDrawdown;
   }
 
-  static calculateMarketMetrics(
-    klines: KlineData[], 
-    config: TimeframeConfig
-  ): MarketMetrics {
+  static calculateMarketMetrics(klines: KlineData[], config: TimeframeConfig): MarketMetrics {
     // Extract necessary data
-    const closes = klines.map(kline => kline.close);
-    const volumes = klines.map(kline => kline.volume);
-  
+    const closes = klines.map((kline) => kline.close);
+
     // Calculate comprehensive market metrics
     const priceChange = MarketMetricsCalculator.calculatePriceChange(klines);
     const volatility = MarketMetricsCalculator.calculateVolatility(klines, config);
@@ -152,27 +148,15 @@ export class MarketMetricsCalculator {
     const momentum = {
       shortTerm: MarketMetricsCalculator.calculateRSI(closes, 14),
       mediumTerm: MarketMetricsCalculator.calculateRSI(closes, 30),
-      longTerm: MarketMetricsCalculator.calculateRSI(closes, 50)
+      longTerm: MarketMetricsCalculator.calculateRSI(closes, 50),
     };
     const volumeProfile = MarketMetricsCalculator.calculateVolumeProfile(klines, config);
-  
-    // Bullish signal detection
-    const bullishResult = this.detectBullishConditions({
-      priceChange,
-      volatility,
-      momentum,
-      closes,
-      volumes,
-      config
-    });
-  
+
     return {
       lastUpdate: Date.now(),
       priceChange,
       volatility,
       drawdown,
-      isBullish: bullishResult.isBullish,
-      bullishReasons: bullishResult.reasons,
       volumeProfile,
       momentum,
     };

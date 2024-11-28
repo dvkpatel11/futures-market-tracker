@@ -1,10 +1,10 @@
 import React from "react";
-import VolatilityDashboard from "./components/VolatilityDashboard";
+import EnhancedVolatilityDashboard from "./components/EnhancedVolatilityDashboard";
 
 function App() {
   return (
     <div className="App">
-      <VolatilityDashboard />
+      <EnhancedVolatilityDashboard />
     </div>
   );
 }

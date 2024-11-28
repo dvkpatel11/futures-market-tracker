@@ -329,7 +329,6 @@ const VolatilityDashboard: React.FC = () => {
                     <StyledTableCell
                       key={timeframe}
                       align="center"
-                      className={metrics?.isBullish ? "positive" : "negative"}
                     >
                       <MarketPopover metrics={metrics}>
                         {metrics?.priceChange ? `${metrics.priceChange.toFixed(2)}%` : "..."}

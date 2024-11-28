@@ -1,72 +1,131 @@
-import { BREAKOUT_CONFIG } from "../utils/constants";
-import { BreakoutAlert, KlineData, MarketMetrics, MarketSignal, TickerData, TimeframeConfig } from "../utils/types";
+import { BehaviorSubject, Observable } from "rxjs";
+import {
+  BreakoutAlert,
+  KlineData,
+  MarketMetrics,
+  MarketSignal,
+  TimeframeConfig,
+  TimeframeSignal,
+} from "../utils/types";
 import { BreakoutDetector } from "./BreakoutDetector";
-import { MarketSignalDetector } from "./MaketSignalDetector";
-import { alertStream$ } from "./WebSocketService";
+import { MarketMetricsCalculator } from "./MarketMetricsCalculator";
 
 export class AlertService {
-  private lastAlerts: Record<string, BreakoutAlert> = {}; // Store last alerts per symbol
-  private readonly alertCooldown = BREAKOUT_CONFIG.cooldown; // Alert cooldown in milliseconds
+  private lastAlerts: Record<string, BreakoutAlert> = {};
+  private breakoutAlerts$ = new BehaviorSubject<BreakoutAlert[]>([]);
 
   constructor(private breakoutDetector: BreakoutDetector) {}
+
+  /**
+   * Handle alert generation for a specific symbol across multiple timeframes
+   */
   handleAlerts(
     symbol: string,
-    klines: KlineData[],
-    marketMetrics: MarketMetrics,
-    tickerData: TickerData,
-    config: TimeframeConfig
-  ) {
-    // Check if we need to skip alerting based on cooldown
+    klines: Record<string, KlineData[]>,
+    marketSignal: MarketSignal,
+    configs: TimeframeConfig[]
+  ): void {
+    // Validate market signal
+    if (!this.isValidMarketSignal(marketSignal)) {
+      console.warn(`Invalid market signal for ${symbol}`);
+      return;
+    }
+
+    // Check for existing recent alert
     const lastAlert = this.lastAlerts[symbol];
     const currentTime = Date.now();
-
-    if (lastAlert && currentTime - lastAlert.timestamp < this.alertCooldown) {
-      // Skip alert if it's within cooldown period
+    if (lastAlert && currentTime - lastAlert.timestamp < this.getAlertCooldown()) {
       return;
     }
 
-    // Check for Breakout Alerts
-    const breakoutAlert = this.breakoutDetector.detectBreakout(symbol, klines, marketMetrics, config.interval);
+    // Process alerts for each configured timeframe
+    configs.forEach((config) => {
+      this.processTimeframeAlert(symbol, klines[config.interval] || [], marketSignal, config);
+    });
+  }
+
+  /**
+   * Process alert for a specific timeframe
+   */
+  private processTimeframeAlert(
+    symbol: string,
+    klines: KlineData[],
+    marketSignal: MarketSignal,
+    config: TimeframeConfig
+  ): void {
+    // Find corresponding timeframe signal
+    const timeframeSignal = this.findTimeframeSignal(marketSignal, config.interval);
+
+    if (!timeframeSignal || klines.length === 0) {
+      console.warn(`Insufficient data for ${symbol} on ${config.interval}`);
+      return;
+    }
+
+    // Detect potential breakout
+    const breakoutAlert = this.detectBreakout(
+      symbol,
+      klines,
+      MarketMetricsCalculator.calculateMarketMetrics(klines, config),
+      config.interval
+    );
+
     if (breakoutAlert) {
       this.emitAlert(breakoutAlert);
-      return;
-    }
-
-    // Check for Bullish Signals if no breakout alert is detected
-    const bullishSignal = MarketSignalDetector.detectBullishSignals(klines, config);
-    if (bullishSignal) {
-      this.emitAlert({
-        symbol,
-        timestamp: Date.now(),
-        breakoutType: "short", // Default to "short" for bullish signals (or adjust as needed)
-        currentPrice: tickerData.lastPrice,
-        priceAtBreakout: tickerData.lastPrice, // Replace with logic for price at breakout
-        percentageMove: bullishSignal.strength, // Use bullish signal strength as percentage
-        timeframe: config.interval,
-        trend: bullishSignal.strength > 0 ? "bullish" : "bearish", // Assuming positive strength indicates bullish trend
-        volumeProfile: {
-          current: marketMetrics.volumeProfile.value, // Assuming volume is part of market metrics
-          trend: marketMetrics.volumeProfile.trend, // Add volume trend to market metrics
-        },
-        momentum: {
-          shortTerm: marketMetrics.momentum.shortTerm,
-          mediumTerm: marketMetrics.momentum.mediumTerm,
-          longTerm: marketMetrics.momentum.longTerm,
-        },
-      });
-      return;
     }
   }
 
   /**
-   * Emits the breakout or bullish signal alert to the alert stream.
-   * @param alert The alert object to emit.
+   * Comprehensive breakout detection
    */
-  private emitAlert(alert: BreakoutAlert | MarketSignal) {
-    if ("breakoutType" in alert) {
-      // Ensure alert has the correct structure as a BreakoutAlert
-      this.lastAlerts[alert.symbol] = alert;
-    }
-    alertStream$.next(alert);
+  private detectBreakout(
+    symbol: string,
+    klines: KlineData[],
+    marketMetrics: MarketMetrics,
+    timeframe: string
+  ): BreakoutAlert | null {
+    return this.breakoutDetector.detectBreakout(symbol, klines, marketMetrics, timeframe);
+  }
+
+  /**
+   * Emit alert to various channels
+   */
+  private emitAlert(alert: BreakoutAlert): void {
+    // Update last alerts
+    this.lastAlerts[alert.symbol] = alert;
+
+    // Update breakout alerts subject
+    const currentAlerts = this.breakoutAlerts$.getValue();
+    this.breakoutAlerts$.next([...currentAlerts, alert]);
+
+    // Additional emit mechanisms can be added here
+    console.log(`🚨 ${alert.direction.toUpperCase()} Breakout Alert: ${alert.symbol}`, alert);
+  }
+
+  /**
+   * Find timeframe signal
+   */
+  private findTimeframeSignal(marketSignal: MarketSignal, timeframe: string): TimeframeSignal | undefined {
+    return marketSignal.signals.find((signal) => signal.timeframe === timeframe);
+  }
+
+  /**
+   * Validate market signal
+   */
+  private isValidMarketSignal(marketSignal: MarketSignal): boolean {
+    return marketSignal.isValid && marketSignal.signals.length > 0 && marketSignal.timestamp > 0;
+  }
+
+  /**
+   * Get alert cooldown period
+   */
+  private getAlertCooldown(): number {
+    return 30000; // 30 seconds, can be configured
+  }
+
+  /**
+   * Get breakout alerts observable
+   */
+  getBreakoutAlerts$(): Observable<BreakoutAlert[]> {
+    return this.breakoutAlerts$.asObservable();
   }
 }

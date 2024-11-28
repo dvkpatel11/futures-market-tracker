@@ -2,10 +2,10 @@ import { BehaviorSubject, catchError, from, interval, switchMap } from "rxjs";
 import { CONFIG, CRYPTO_MARKET_CONFIG } from "../utils/constants";
 import { BreakoutAlert, MarketMetrics, MarketSignal, TimeframeSignal, Trend, TrendReason } from "../utils/types";
 import { BreakoutDetector } from "./BreakoutDetector";
+import { MarketSignalDetector } from "./MaketSignalDetector";
 import { MarketDataFetcher } from "./MarketDataFetcher";
 import { MarketMetricsCalculator } from "./MarketMetricsCalculator";
 import { marketState$ } from "./WebSocketService";
-import { MarketSignalDetector } from "./MaketSignalDetector";
 
 export class MarketDataService {
   private destroy$ = new BehaviorSubject<void>(undefined);
@@ -45,19 +45,18 @@ export class MarketDataService {
   private async analyzeSymbol(symbol: string): Promise<void> {
     const breakoutAlerts: BreakoutAlert[] = [];
     const symbolMetrics: Record<string, MarketMetrics> = {};
+    const signals: TimeframeSignal[] = [];
 
     for (const [timeframe, config] of Object.entries(CRYPTO_MARKET_CONFIG.timeframes)) {
       try {
         const marketData = await this.dataFetcher.fetchMarketData(symbol, config.interval, 100); // Adjust limit as needed
         const klines = marketData.klines;
 
-        // Construct market metrics for this timeframe
         const marketMetrics: MarketMetrics = MarketMetricsCalculator.calculateMarketMetrics(klines, config);
-
-        // Store metrics for the timeframe
         symbolMetrics[timeframe] = marketMetrics;
+        const signal = MarketSignalDetector.detectSignal(klines, config);
+        signals.push(signal);
 
-        // Update global market state
         const currentState = marketState$.getValue();
         marketState$.next({
           ...currentState,
@@ -77,8 +76,7 @@ export class MarketDataService {
       }
     }
 
-    const marketSignal = this.generateOverallMarketSignal(symbol, symbolMetrics);
-
+    const marketSignal = MarketSignalDetector.generateMarketSignal(signals, symbol);
     if (marketSignal && marketSignal.isValid) {
       this.marketSignals$.next(marketSignal);
     }
@@ -88,14 +86,10 @@ export class MarketDataService {
         const marketData = await this.dataFetcher.fetchMarketData(symbol, config.interval, 100);
         const klines = marketData.klines;
         const metrics = symbolMetrics[timeframe];
-
-        // Breakout Detection
         const breakoutAlert = this.breakoutDetector.detectBreakout(symbol, klines, metrics, timeframe);
 
         if (breakoutAlert) {
           breakoutAlerts.push(breakoutAlert);
-
-          // Trigger custom alert logic
           this.triggerBreakoutAlert(breakoutAlert);
         }
       } catch (error) {
@@ -182,45 +176,6 @@ export class MarketDataService {
       reasons.push("stable_volume");
       return { trend: "neutral", reasons };
     }
-  }
-
-  private generateOverallMarketSignal(
-    symbol: string,
-    symbolMetrics: Record<string, MarketMetrics>
-  ): MarketSignal | null {
-    const bullishTimeframes = Object.entries(symbolMetrics)
-      .filter(([_, metrics]) => metrics.isBullish)
-      .map(([timeframe, metrics]) => {
-        const trend = MarketDataService.determineTrend(metrics);
-
-        const signal: TimeframeSignal = {
-          timeframe,
-          strength: metrics.priceChange,
-          confirmedAt: metrics.lastUpdate,
-          priceAtSignal: metrics.priceChange, // Using priceChange as price at signal
-          components: {
-            price: metrics.priceChange, // Again, using priceChange as price
-            volume: metrics.volumeProfile.value,
-            trend,
-            priceChangePercent: metrics.priceChange,
-          },
-        };
-        return signal;
-      });
-
-    if (bullishTimeframes.length < CONFIG.MARKET_ANALYSIS.TREND_DETECTION.DEFAULT_TIMEFRAMES_FOR_CONFIRMATION)
-      return null;
-
-    const overallStrength = bullishTimeframes.reduce((sum, signal) => sum + signal.strength, 0);
-
-    return {
-      symbol,
-      timestamp: Date.now(),
-      signals: bullishTimeframes,
-      overallStrength,
-      isValid: bullishTimeframes.length >= 2,
-      volatilityProfile: MarketSignalDetector.determineVolatilityProfile(overallStrength),
-    };
   }
 
   getMarketSignals$() {

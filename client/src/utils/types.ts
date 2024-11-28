@@ -63,6 +63,8 @@ export interface MarketSignal {
   overallStrength: number;
   isValid: boolean;
   volatilityProfile: "low" | "medium" | "high" | "extreme";
+  trendConsistency: number;
+  overallTrend: Trend["trend"];
 }
 
 export interface TimeframeSignal {
@@ -92,8 +94,6 @@ export interface MarketMetrics {
   priceChange: number;
   volatility: number;
   drawdown: number;
-  isBullish: boolean;
-  bullishReasons: TrendReason[];
   volumeProfile: {
     value: number;
     trend: "increasing" | "decreasing" | "stable";
@@ -159,6 +159,8 @@ export interface BreakoutConfig {
   };
   timeframes: string[]; // Monitored timeframes
   cooldown: number; // Cooldown time in ms
+  volumeMultiplier: number; // Volume confirmation multiplier
+  volatilityExpansionThreshold: number;
 }
 
 export interface BreakoutAlert {
@@ -169,6 +171,7 @@ export interface BreakoutAlert {
   priceAtBreakout: number; // Price at breakout start
   percentageMove: number; // % move since breakout
   timeframe: string; // Timeframe for breakout
+  direction: "bullish" | "bearish";
   trend: Trend;
   volumeProfile: {
     current: number; // Current volume
